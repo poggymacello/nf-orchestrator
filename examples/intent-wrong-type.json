@@ -1,0 +1,5 @@
+{
+  "name": "sample-nf",
+  "replicas": "two",
+  "environment": "dev"
+}
