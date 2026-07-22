@@ -200,3 +200,21 @@ scratch infrastructure created for this exercise.
 
 `ruff check .` clean and `pytest` green locally (18 tests), then the same two commands on the pull
 request through the repo's one CI job, `lint-test`.
+
+The first CI run on this PR failed before either command, at `pip install -e ".[dev]"`:
+
+```
+error: Multiple top-level packages discovered in a flat-layout: ['charts', 'orchestrator'].
+```
+
+Adding `charts/` at the repo root gave setuptools a second directory to guess about, and it
+refuses to guess. It passed locally because my virtualenv already had the editable install from
+before the chart existed, so nothing re-ran the build. Fixed by naming the package explicitly in
+`pyproject.toml`:
+
+```toml
+[tool.setuptools]
+packages = ["orchestrator"]
+```
+
+A local `pip install -e ".[dev]"` now reproduces what CI does instead of skipping it.
