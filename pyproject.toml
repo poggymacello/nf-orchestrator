@@ -14,5 +14,8 @@ dev = [
     "ruff",
 ]
 
+[tool.setuptools]
+packages = ["orchestrator"]
+
 [tool.ruff]
 line-length = 100

@@ -1,7 +1,8 @@
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
+from orchestrator import deploy as deploy_engine
 from orchestrator.intent import Intent
 
 app = FastAPI(title="nf-orchestrator")
@@ -20,3 +21,11 @@ def intent_schema() -> dict[str, Any]:
 @app.post("/intents/validate")
 def validate_intent(intent: Intent) -> dict[str, Any]:
     return {"valid": True, "intent": intent.model_dump()}
+
+
+@app.post("/deployments", status_code=201)
+def create_deployment(intent: Intent) -> dict[str, Any]:
+    try:
+        return deploy_engine.deploy(intent)
+    except deploy_engine.DeployError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
