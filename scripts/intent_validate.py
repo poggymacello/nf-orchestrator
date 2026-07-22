@@ -1,18 +1,12 @@
-"""Standalone intent-validation probe, ahead of the M1 HTTP endpoint.
+"""Intent-validation probe, bypassing HTTP.
 
-Defines a minimal intent model and runs one valid and three invalid payloads
-through it, printing the real pydantic output for each.
+Runs one valid and three invalid payloads through the same model the
+/intents/validate endpoint uses, printing the real pydantic output for each.
 """
 
-from typing import Literal
+from pydantic import ValidationError
 
-from pydantic import BaseModel, ValidationError
-
-
-class Intent(BaseModel):
-    name: str
-    replicas: int
-    environment: Literal["dev", "staging", "prod"]
+from orchestrator.intent import Intent
 
 
 PAYLOADS = {
