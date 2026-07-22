@@ -33,11 +33,15 @@ anything non-public.
 - [ ] Every O-RAN statement cites a public source (O-RAN SC / O-RAN Alliance published docs), with a link.
 - [ ] The "self-directed learning project" framing holds on every page.
 
-## Enforced in CI
+## CI gates
 
-- **Gitleaks** scans for accidental secrets.
-- A **banned-terms grep** fails the build on any private term. The banned-terms list is kept
-  **outside this repository** and supplied to CI as a secret, so the list itself never leaks.
+CI today is one job, `lint-test`, running `ruff check .` and `pytest`. It triggers on push to
+`main` and on pull requests. Everything below is `(planned, M5)` and is not running yet, so the
+leak-scrub above is a manual step before every commit.
+
+- **Gitleaks** to scan for accidental secrets. `(planned, M5)`
+- A **banned-terms grep** to fail the build on any private term, with the list kept outside this
+  repository and supplied to CI as a secret so the list itself never leaks. `(planned, M5)`
 
 ## Architecture decisions
 
