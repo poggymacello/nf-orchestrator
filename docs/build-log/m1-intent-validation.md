@@ -67,6 +67,10 @@ curl -s localhost:8000/intents/schema
 }
 ```
 
+`maxLength` on `name` is 53 from 2026-07-22 onward, not the 63 captured above. The first real
+deploy showed that a name Helm rejects was passing validation here; see
+[the M2 build log](m2-deploy-engine.md).
+
 ## The three rejections
 
 All three return `HTTP 422` with a `detail` array. Bodies below are exactly what the endpoint

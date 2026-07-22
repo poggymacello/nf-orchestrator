@@ -57,6 +57,21 @@ def test_bad_name_pattern_rejected() -> None:
     assert [e["type"] for e in response.json()["detail"]] == ["string_pattern_mismatch"]
 
 
+def test_name_longer_than_a_helm_release_name_rejected() -> None:
+    payload = {**VALID, "name": "a" * 54}
+    response = client.post("/intents/validate", json=payload)
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert [e["type"] for e in errors] == ["string_too_long"]
+    assert errors[0]["ctx"]["max_length"] == 53
+
+
+def test_name_at_the_helm_limit_accepted() -> None:
+    payload = {**VALID, "name": "a" * 53}
+    response = client.post("/intents/validate", json=payload)
+    assert response.status_code == 200
+
+
 def test_schema_endpoint_exposes_contract() -> None:
     response = client.get("/intents/schema")
     assert response.status_code == 200
