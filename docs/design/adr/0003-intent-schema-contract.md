@@ -24,12 +24,18 @@ The model declares three required fields and forbids unknown ones:
 
 | Field | Type | Constraint |
 |---|---|---|
-| `name` | string | matches `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, max 63 characters |
+| `name` | string | matches `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, max 53 characters |
 | `replicas` | integer | 1 to 10 inclusive |
 | `environment` | string | one of `dev`, `staging`, `prod` |
 
 `name` follows the RFC 1123 label rules because it becomes a Helm release name at M2, and a name
 that is legal here but illegal to Kubernetes would move the rejection past the API boundary.
+
+The 53-character cap is Helm's release-name limit, not the RFC 1123 limit of 63. It was set to 63
+when this ADR was first written, and the first real deploy on 2026-07-22 showed the gap: a 60
+character name validated at `200` and then failed inside Helm with `release name is invalid`.
+Lowered to 53 so the rejection happens at the API boundary. See
+[the M2 build log](../../build-log/m2-deploy-engine.md) for the failing run.
 
 Two routes expose it:
 
