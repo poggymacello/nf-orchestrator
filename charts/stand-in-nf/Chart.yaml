@@ -1,0 +1,6 @@
+apiVersion: v2
+name: stand-in-nf
+description: Stand-in network function used to exercise the deploy engine
+type: application
+version: 0.1.0
+appVersion: "1.27"
