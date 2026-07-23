@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 
 from orchestrator import deploy as deploy_engine
+from orchestrator import reconciler
 from orchestrator.intent import Intent
 
 app = FastAPI(title="nf-orchestrator")
@@ -27,5 +28,21 @@ def validate_intent(intent: Intent) -> dict[str, Any]:
 def create_deployment(intent: Intent) -> dict[str, Any]:
     try:
         return deploy_engine.deploy(intent)
+    except deploy_engine.DeployError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/deployments/{name}")
+def get_deployment(name: str) -> dict[str, Any]:
+    try:
+        return reconciler.reconcile(name)
+    except deploy_engine.DeployError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.delete("/deployments/{name}")
+def delete_deployment(name: str) -> dict[str, Any]:
+    try:
+        return reconciler.teardown(name)
     except deploy_engine.DeployError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
