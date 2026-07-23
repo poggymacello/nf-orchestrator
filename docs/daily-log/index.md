@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-07-23 | 9 | Build the M3 reconciler and watch the real lifecycle-state sequence it derives from cluster signals | [2026-07-23](2026-07-23.md) |
 | 2026-07-22 | 8 | Build the M2 deploy engine and prove a validated intent reaches a Running pod on kind | [2026-07-22](2026-07-22.md) |
 | 2026-07-21 | 7 | Build the M1 intent-validation endpoint and document it from what it actually returned | [2026-07-21](2026-07-21.md) |
 | 2026-07-20 | 6 | Understand CI by reading every real job and proving I can break it; close out Phase A | [2026-07-20](2026-07-20.md) |
