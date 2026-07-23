@@ -1,8 +1,9 @@
 # NF lifecycle states
 
 The orchestrator models every deployment as one of four states:
-`NOT_INSTANTIATED → INSTANTIATING → INSTANTIATED → FAILED`. This document reconciles that model
-against what a real Helm-onto-Kubernetes deploy actually does.
+`NOT_INSTANTIATED → INSTANTIATING → INSTANTIATED → FAILED`. As of M3 the reconciler emits these
+states, deriving each from live Kubernetes and Helm signals at read time. This document reconciles
+the model against what a real deploy, failure, and teardown actually produce.
 
 ## State diagram
 
@@ -18,21 +19,26 @@ stateDiagram-v2
 
 ## Transition table
 
-| Transition | Trigger | Underlying signal (observed 2026-07-17) | Status |
+Signals in the last column are what the reconciler read to derive each transition, observed on
+2026-07-23 unless noted.
+
+| Transition | Trigger | Underlying signal the reconciler derived from | Status |
 |---|---|---|---|
-| `NOT_INSTANTIATED` → `INSTANTIATING` | Intent submitted, deploy engine calls `helm install` | `helm install` returns `STATUS: deployed`, `REVISION: 1`; pod appears as `Pending` then `ContainerCreating` | code today: nothing calls this; `(planned, M3)` for the reconciler to report it |
-| `INSTANTIATING` → `INSTANTIATED` | Workload reaches a healthy state | `kubectl get pods` shows `1/1 Running` — observed sequence: `Pending` → `ContainerCreating` → `Running` | `(planned, M3)` |
-| `INSTANTIATING` → `FAILED` | Workload cannot become healthy | `kubectl get pods` shows `ErrImagePull` → `ImagePullBackOff`, persisting — observed by deploying a nonexistent image tag. `helm status` stayed `STATUS: deployed` the entire time; release status and pod health are separate signals, only the second one tells you the workload actually failed | `(planned, M3)` |
-| `INSTANTIATED` / `FAILED` → `NOT_INSTANTIATED` | Teardown | `helm uninstall` returns `release uninstalled`; pod goes `Terminating` then disappears | `(planned, M3)` |
+| `NOT_INSTANTIATED` → `INSTANTIATING` | Intent submitted, deploy engine calls `helm upgrade --install` | Helm release status is `deployed` and pods are not all `Running` yet. Observed: `helm=deployed pods=[('Pending','ContainerCreating'),('Pending','ContainerCreating')]` at 08:11:43 | emitted by the reconciler (M3) |
+| `INSTANTIATING` → `INSTANTIATED` | Every pod reaches `Running` | All pod phases are `Running`. Observed one second later: `helm=deployed pods=[('Running',None),('Running',None)]` at 08:11:44 | emitted by the reconciler (M3) |
+| `INSTANTIATING` → `FAILED` | A pod cannot become healthy | Any pod waiting-reason in `ImagePullBackOff` / `ErrImagePull` / `CrashLoopBackOff`. Observed by upgrading to a nonexistent image tag: `helm=deployed pods=[('Pending','ErrImagePull'),('Running',None),('Running',None)]` at 08:14:16, settling to `ImagePullBackOff`. `helm status` stayed `deployed` the whole time, so the state came from the pod reason, not the release | emitted by the reconciler (M3) |
+| `INSTANTIATED` / `FAILED` → `NOT_INSTANTIATED` | Teardown | `DELETE /deployments/{name}` runs `helm uninstall`; the next read finds no release. Observed: `{"state":"NOT_INSTANTIATED","uninstalled":true}`, then `helm list` shows the release gone and no pods remain | emitted by the reconciler (M3) |
 
 ## What exists today vs planned
 
-Everything above the table is real, observed Kubernetes/Helm behavior from a manual deploy of a
-scratch chart. None of it is currently reported by the orchestrator itself — there is no status
-reconciler yet. The `orchestrator/` code at this milestone (M0) only serves `/healthz`; it does not
-watch pods, does not call Helm, and does not expose any of these four states. The reconciler that
-would poll Kubernetes and translate pod/release signals into `NOT_INSTANTIATED` /
-`INSTANTIATING` / `INSTANTIATED` / `FAILED` is `(planned, M3)`.
+As of M3 the orchestrator emits all four states itself. `GET /deployments/{name}` reads the live
+Helm release status and pod phases and returns the derived state; `DELETE /deployments/{name}`
+uninstalls the release and returns `NOT_INSTANTIATED`. The derivation is a pure function,
+`derive_state`, described in [ADR-0005](adr/0005-derive-lifecycle-state-from-cluster-signals.md) and
+the [M3 build log](../build-log/m3-reconciler.md). State is derived on read, not stored.
+
+Still `(planned)`: metrics and any push/event stream for these transitions are M4. The reconciler
+polls on request and cannot report a transition nobody polled for.
 
 ## Why these states exist
 
@@ -64,5 +70,5 @@ The four states are a projection over lower-level signals, not a replacement for
   seen above, `deployed` does not imply the workload is healthy; it only means the manifest was
   applied successfully.
 
-The reconciler's job, once built, is to watch the first two and report one of the four states —
-not to invent new information, but to compress two APIs' worth of raw signals into one.
+The reconciler's job is to read the first two and report one of the four states — not to invent new
+information, but to compress two APIs' worth of raw signals into one.
