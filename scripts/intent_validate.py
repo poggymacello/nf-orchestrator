@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from orchestrator.intent import Intent
 
-
 PAYLOADS = {
     "valid": {"name": "sample-nf", "replicas": 2, "environment": "dev"},
     "missing_required_field": {"name": "sample-nf", "environment": "dev"},

@@ -69,6 +69,7 @@ def pod_phases(name: str) -> list[dict[str, Any]]:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise DeployError(result.stderr.strip() or result.stdout.strip())
