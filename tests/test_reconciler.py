@@ -1,8 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from orchestrator import app
-from orchestrator import reconciler
+from orchestrator import app, reconciler
 from orchestrator.reconciler import State, derive_state
 
 client = TestClient(app)
