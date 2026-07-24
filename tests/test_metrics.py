@@ -1,9 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from orchestrator import app
+from orchestrator import app, metrics
 from orchestrator import deploy as deploy_engine
-from orchestrator import metrics
 
 client = TestClient(app)
 
