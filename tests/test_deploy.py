@@ -79,3 +79,33 @@ def test_helm_failure_surfaces_as_502(monkeypatch: pytest.MonkeyPatch) -> None:
     response = client.post("/deployments", json=VALID)
     assert response.status_code == 502
     assert response.json()["detail"] == "chart not found"
+
+
+def test_unreachable_cluster_is_classified_apart_from_a_refusal() -> None:
+    """M4 drill 2: helm's and kubectl's unreachable wordings, POSIX and Windows."""
+    unreachable = [
+        'Error: Kubernetes cluster unreachable: Get "https://127.0.0.1:64114/version"',
+        "Unable to connect to the server: dial tcp 127.0.0.1:64114: connection refused",
+        (
+            "connectex: No connection could be made because the target machine "
+            "actively refused it."
+        ),
+    ]
+    for message in unreachable:
+        assert isinstance(
+            deploy_engine.classify_error(message), deploy_engine.ClusterUnreachable
+        ), message
+
+    refusal = deploy_engine.classify_error("Error: release: not found")
+    assert isinstance(refusal, deploy_engine.DeployError)
+    assert not isinstance(refusal, deploy_engine.ClusterUnreachable)
+
+
+def test_unreachable_cluster_surfaces_as_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_helm(args: list[str]) -> str:
+        raise deploy_engine.ClusterUnreachable("Kubernetes cluster unreachable")
+
+    monkeypatch.setattr(deploy_engine, "run_helm", fake_run_helm)
+    response = client.post("/deployments", json=VALID)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Kubernetes cluster unreachable"
