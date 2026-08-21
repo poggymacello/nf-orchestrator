@@ -10,9 +10,26 @@ from orchestrator.intent import Intent
 app = FastAPI(title="nf-orchestrator")
 
 
+def http_error(exc: deploy_engine.DeployError) -> HTTPException:
+    """502 when the cluster answered and refused, 503 when it could not be reached."""
+    unreachable = isinstance(exc, deploy_engine.ClusterUnreachable)
+    return HTTPException(status_code=503 if unreachable else 502, detail=str(exc))
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
+    """Liveness only: this process is running. Says nothing about the cluster."""
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz() -> dict[str, str]:
+    """Readiness: this process can reach the cluster it orchestrates."""
+    try:
+        deploy_engine.check_cluster()
+    except deploy_engine.DeployError as exc:
+        raise http_error(exc) from exc
+    return {"status": "ready", "cluster": "reachable"}
 
 
 @app.get("/intents/schema")
@@ -36,7 +53,7 @@ def create_deployment(intent: Intent) -> dict[str, Any]:
         result = deploy_engine.deploy(intent)
     except deploy_engine.DeployError as exc:
         metrics.record_deploy("failed", intent.environment)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise http_error(exc) from exc
     metrics.record_deploy("success", intent.environment)
     return result
 
@@ -46,7 +63,7 @@ def get_deployment(name: str) -> dict[str, Any]:
     try:
         return reconciler.reconcile(name)
     except deploy_engine.DeployError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise http_error(exc) from exc
 
 
 @app.delete("/deployments/{name}")
@@ -54,4 +71,4 @@ def delete_deployment(name: str) -> dict[str, Any]:
     try:
         return reconciler.teardown(name)
     except deploy_engine.DeployError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise http_error(exc) from exc
