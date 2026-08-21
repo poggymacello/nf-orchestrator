@@ -22,13 +22,16 @@ so instead of pretending the tool is trustworthy.
 4. **Write the postmortem** from the captured output, blameless, with the surprises kept in.
 5. **Write or update a runbook** only for the steps that were actually used.
 6. **Record action items** as findings. Fixes land in their own commits, not in the drill.
+7. **Re-run the drill after the fix**, and update the runbook so it stops warning about behaviour
+   that no longer exists. A runbook describing a fixed bug is as misleading as one describing an
+   imagined system.
 
 ## Drills run so far
 
 | # | Drill | Date | Outcome | Postmortem |
 |---|---|---|---|---|
-| 1 | Pods killed mid-deploy | 2026-08-20 | 3 findings — the reconciler reports `INSTANTIATED` without ever checking how many replicas the intent asked for | [drill-1](postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) |
-| 2 | Control plane unreachable | 2026-08-20 | 3 findings — a running NF is reported as `NOT_INSTANTIATED` with HTTP 200 while the cluster is unreachable | [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md) |
+| 1 | Pods killed mid-deploy | 2026-08-20 | 4 findings — the reconciler reported `INSTANTIATED` without ever checking how many replicas the intent asked for. 1-3 fixed 2026-08-21 | [drill-1](postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) |
+| 2 | Control plane unreachable | 2026-08-20 | 4 findings — a running NF was reported as `NOT_INSTANTIATED` with HTTP 200 while the cluster was unreachable. 1-3 fixed 2026-08-21 | [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md) |
 | 3 | Node disk full | — | Abandoned before running; kind disables kubelet disk eviction, so the drill cannot produce the failure it is meant to produce. Reasoning in [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md#why-this-drill-replaced-the-disk-full-drill) | — |
 
 ## Runbooks
@@ -47,7 +50,10 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-Both drills so far turned up Sev-1 behaviour, which is the point of running them.
+Both drills so far turned up Sev-1 behaviour, which is the point of running them. The fixes are
+recorded in [ADR-0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md) and
+verified against the cluster on 2026-08-21; each drill's action-item table says which findings are
+closed and which are still open.
 
 ## Conventions
 

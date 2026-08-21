@@ -1,7 +1,7 @@
 # Postmortem — Drill 1: pods killed mid-deploy
 
 **Date:** 2026-08-20 · **Severity:** Sev-1 · **Duration of the drill:** ~4 minutes ·
-**Status:** findings open
+**Status:** findings 1-3 fixed 2026-08-21, finding 4 open
 
 **Summary:** Deleted all three pods of a deployment while it was still coming up. The workload
 recovered on its own in about two seconds, as Kubernetes is supposed to. The orchestrator's
@@ -130,12 +130,14 @@ absent series versus zero values: the endpoint reports an instant, and an instan
 
 | # | Finding | Action | Status |
 |---|---|---|---|
-| 1 | `INSTANTIATED` reported without a replica check | Read the desired replica count (`helm get values`, or carry the intent) and require ready pods == desired before reporting `INSTANTIATED` | open |
-| 2 | `Succeeded` falls through to `INSTANTIATING` | Handle terminal phases explicitly; make the fall-through case say "unknown" rather than "instantiating" | open |
-| 3 | Failure detection is an allowlist of three waiting-reasons | Derive health from container `ready` and pod conditions instead of matching reason strings | open |
-| 4 | State flaps on routine replacement | Decide what a stable state means before alerting on it — a sustained-read rule, or a rollout-complete signal | open |
+| 1 | `INSTANTIATED` reported without a replica check | Read the desired replica count (`helm get values`, or carry the intent) and require ready pods == desired before reporting `INSTANTIATED` | **fixed 2026-08-21** — `derive_state` takes `desired`; terminating pods excluded ([ADR-0006](../../design/adr/0006-instantiated-means-the-intent-is-satisfied.md)) |
+| 2 | `Succeeded` falls through to `INSTANTIATING` | Handle terminal phases explicitly; make the fall-through case say "unknown" rather than "instantiating" | **fixed 2026-08-21** — a non-terminating pod in `Succeeded`/`Failed` is now `FAILED` |
+| 3 | Failure detection is an allowlist of three waiting-reasons | Derive health from container `ready` and pod conditions instead of matching reason strings | **fixed 2026-08-21** — readiness gates `INSTANTIATED`; the allowlist only accelerates `FAILED` |
+| 4 | State flaps on routine replacement | Decide what a stable state means before alerting on it — a sustained-read rule, or a rollout-complete signal | open — the flapping is now honest (readiness really does drop), but the alerting question stands |
 
-None of these are fixed in this commit. The drill records what the system does today.
+Findings 1-3 were fixed on Day 12, verified against the cluster, and are recorded in
+[ADR-0006](../../design/adr/0006-instantiated-means-the-intent-is-satisfied.md). The body of this
+postmortem is left as written on the day, describing the system as it was.
 
 ## Reproduce
 
