@@ -1,7 +1,7 @@
 # Postmortem — Drill 2: control plane unreachable
 
 **Date:** 2026-08-20 · **Severity:** Sev-1 · **Outage window:** 20:50:02 → 20:50:31 (29s) ·
-**Status:** findings open
+**Status:** findings 1-3 fixed 2026-08-21, finding 4 open
 
 **Summary:** Stopped the kind control-plane container with a healthy deployment running, then
 exercised the API. The deploy path behaved correctly: `502` with the real error, and the failure
@@ -174,9 +174,9 @@ as "the orchestrator is working".
 
 | # | Finding | Action | Status |
 |---|---|---|---|
-| 1 | Unreachable cluster reported as `NOT_INSTANTIATED` / 200 | Distinguish "release not found" from "cluster unreachable" in `helm_release_status`; the second must surface as an error state or a 5xx, never as a lifecycle state | open |
-| 2 | `CreateContainerConfigError` reads as `INSTANTIATED` | Same fix as drill 1 action item 3: use container readiness, not a reason allowlist | open |
-| 3 | `/healthz` is green with all dependencies down | Either document it as process-liveness only, or add a readiness endpoint that checks cluster reachability | open |
+| 1 | Unreachable cluster reported as `NOT_INSTANTIATED` / 200 | Distinguish "release not found" from "cluster unreachable" in `helm_release_status`; the second must surface as an error state or a 5xx, never as a lifecycle state | **fixed 2026-08-21** — `ClusterUnreachable` propagates, every route returns 503 ([ADR-0006](../../design/adr/0006-instantiated-means-the-intent-is-satisfied.md)) |
+| 2 | `CreateContainerConfigError` reads as `INSTANTIATED` | Same fix as drill 1 action item 3: use container readiness, not a reason allowlist | **fixed 2026-08-21** — covered by unit test; the live recovery window did not reproduce on the 08-21 replay |
+| 3 | `/healthz` is green with all dependencies down | Either document it as process-liveness only, or add a readiness endpoint that checks cluster reachability | **fixed 2026-08-21** — both: `/healthz` documented and pinned as liveness, new `/readyz` returns 503 when unreachable |
 | 4 | Disk drill has no failure to observe on kind | Configure an eviction threshold on the kind node, or bound the workload's disk with a volume, before attempting drill 3 | open |
 
 ## Reproduce
@@ -189,3 +189,21 @@ curl -s localhost:8000/deployments/drill-one
 curl -s localhost:8000/healthz
 docker start nf-orchestrator-control-plane
 ```
+
+## Follow-up, 2026-08-21
+
+Findings 1-3 fixed on Day 12 and re-verified by stopping the control plane again with the same
+release running:
+
+```
+GET    /deployments/drill-one -> 503 {"detail":"Error: kubernetes cluster unreachable: ..."}
+POST   /deployments           -> 503
+DELETE /deployments/drill-one -> 503
+GET    /healthz               -> 200 {"status":"ok"}
+GET    /readyz                -> 503 {"detail":"Unable to connect to the server: ..."}
+```
+
+`DELETE` is the one worth calling out. Before the fix it would have gone through
+`helm_release_status` → `None` → "no release here" and returned
+`{"uninstalled": false}` with HTTP 200 — reporting a successful idempotent teardown of a release
+that was still running. That path was never exercised during the original drill.

@@ -7,57 +7,60 @@ you do not believe.
 the cluster disagree.
 
 Every command here was run during
-[drill 1](../postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) on 2026-08-20.
+[drill 1](../postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) on 2026-08-20, and re-run
+against the fixed build on 2026-08-21.
 
-## Warning: `INSTANTIATED` does not mean the intent was satisfied
-
-The reconciler reports `INSTANTIATED` when every pod it finds is `Running`. It never reads how many
-replicas the intent asked for. Confirmed on 2026-08-20: an intent for 3 replicas with 1 pod running
-reported `INSTANTIATED`, and the same intent momentarily reported `INSTANTIATED` with 6 pods.
-**Always check the count yourself (step 2).** Drill 1, action item 1, still open.
-
-## 1. Read the state and the signals behind it
+## 1. Read the state and the numbers behind it
 
 ```bash
 curl -s localhost:8000/deployments/<release>
 ```
 
-The response carries the raw signals that produced the state, which is what you actually diagnose
-from:
+The response carries the signals that produced the state, which is what you actually diagnose from:
 
 ```
 {"release":"drill-one","state":"INSTANTIATING","helm_status":"deployed",
- "pods":[{"phase":"Pending","reason":"ContainerCreating"}, ...]}
+ "desired_replicas":3,"ready_replicas":1,
+ "pods":[{"phase":"Running","reason":null,"ready":true}]}
 ```
 
-If `helm_status` is `null` and `pods` is empty, the release may not exist — or the cluster may be
-unreachable. Those are indistinguishable in this response; go to
-[control plane unreachable](control-plane-unreachable.md) before believing it.
+`INSTANTIATED` is only reported when `ready_replicas` equals `desired_replicas` and every pod is
+ready, so `desired_replicas` versus `ready_replicas` is the first thing to read. A gap between them
+is the whole diagnosis in one line.
 
-## 2. Compare running pods against what the intent asked for
+> **Before 2026-08-21** neither field existed and `INSTANTIATED` meant only "every pod I happened
+> to find is `Running`" — it reported `INSTANTIATED` for one pod of a three-replica intent. Fixed in
+> [ADR-0006](../../design/adr/0006-instantiated-means-the-intent-is-satisfied.md).
 
-The orchestrator will not do this for you:
+If the request returns **503**, the cluster is unreachable and this response is not about your
+deployment — go to [control plane unreachable](control-plane-unreachable.md).
+
+## 2. Find out whether something changed the Deployment outside Helm
+
+`desired_replicas` comes from the release's values, which is what the intent asked for. The
+Deployment may say something else:
 
 ```bash
-helm get values <release> --kube-context kind-nf-orchestrator -o json
-kubectl --context kind-nf-orchestrator get deployment <release> \
-  -o custom-columns=DESIRED:.spec.replicas,READY:.status.readyReplicas --no-headers
+helm get values <release> --kube-context kind-nf-orchestrator --all -o json
 ```
 
-`replicaCount` from the first command is what was asked for. A `DESIRED` that differs from it means
-something changed the Deployment outside Helm — a manual scale, or an autoscaler. A `READY` below
-`DESIRED` means the rollout is incomplete regardless of what the state endpoint says.
+```bash
+kubectl --context kind-nf-orchestrator get deployment <release> -o custom-columns=DESIRED:.spec.replicas,READY:.status.readyReplicas --no-headers
+```
+
+If the Deployment's `DESIRED` differs from the release's `replicaCount`, something scaled it outside
+the orchestrator — a manual `kubectl scale`, or an autoscaler. The orchestrator deliberately holds
+the cluster against the intent, so it will keep reporting `INSTANTIATING` until they agree.
+Resubmitting the intent (step 6) puts it back.
 
 ## 3. Read container state, not pod phase
 
 ```bash
-kubectl --context kind-nf-orchestrator get pods -l app=<release> \
-  -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[0].ready,REASON:.status.containerStatuses[0].state.waiting.reason
+kubectl --context kind-nf-orchestrator get pods -l app=<release> -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[0].ready,REASON:.status.containerStatuses[0].state.waiting.reason
 ```
 
-Pod `phase` is `Running` while a container inside it is stuck. Both drills produced a `Running` pod
-whose container was not usable — `CreateContainerConfigError` in drill 2. `READY` is the column
-that tells the truth.
+Pod `phase` reads `Running` while a container inside it is stuck. `READY` is the column that tells
+the truth, and it is what the reconciler now uses.
 
 Interpretation of common `REASON` values:
 
@@ -66,14 +69,16 @@ Interpretation of common `REASON` values:
 | `ContainerCreating` | Normal, expect seconds | `INSTANTIATING` |
 | `ErrImagePull`, `ImagePullBackOff` | Bad image or tag; check the chart's `image.tag` | `FAILED` |
 | `CrashLoopBackOff` | Container starts and exits; read logs | `FAILED` |
-| `CreateContainerConfigError` | Config/env cannot be built; often transient after a node restart | `INSTANTIATED` — wrong, see drill 2 |
-| anything else | Not in the reconciler's failure list | `INSTANTIATING` or `INSTANTIATED` — do not rely on it |
+| `CreateContainerConfigError` | Config/env cannot be built; often transient after a node restart | `INSTANTIATING` |
+| anything else | Not a recognised failure, but an unready pod either way | `INSTANTIATING` |
+
+The last row is the point of the M4 change: an unrecognised reason no longer passes as success. It
+holds the deployment at `INSTANTIATING` rather than being ignored.
 
 ## 4. Check the events before changing anything
 
 ```bash
-kubectl --context kind-nf-orchestrator get events \
-  --field-selector involvedObject.kind=Pod --sort-by=.lastTimestamp | tail
+kubectl --context kind-nf-orchestrator get events --field-selector involvedObject.kind=Pod --sort-by=.lastTimestamp | tail
 ```
 
 Events name the cause; pod status only shows the symptom. This is where
@@ -83,40 +88,47 @@ Events name the cause; pod status only shows the symptom. This is where
 ## 5. Distinguish flapping from failing
 
 State is derived per request, so a single read is an instant, not a state. During routine pod
-replacement in drill 1 the endpoint went
-`INSTANTIATING → INSTANTIATED → INSTANTIATING → INSTANTIATED` in three seconds with nothing wrong.
+replacement the endpoint moves between `INSTANTIATING` and `INSTANTIATED` within seconds, because
+readiness genuinely drops while pods are replaced:
+
+```
+16:13:44 poll3  INSTANTIATED   desired=3 ready=3
+16:13:45 KILL all pods
+16:13:45 poll4  INSTANTIATING  desired=3 ready=0
+16:13:46 poll5  INSTANTIATED   desired=3 ready=3
+```
 
 Poll before concluding anything:
 
 ```bash
-for i in $(seq 1 10); do
-  echo "$(date +%H:%M:%S) $(curl -s localhost:8000/deployments/<release>)"
-done
+for i in $(seq 1 10); do echo "$(date +%H:%M:%S) $(curl -s localhost:8000/deployments/<release>)"; done
 ```
 
 A state that changes across reads is a rollout in progress. A state that is stable and wrong is an
-incident.
+incident. What counts as a *stable* state for alerting purposes is still an open question
+(drill 1, action item 4).
 
 ## 6. Recovery
 
-For a stuck rollout, resubmitting the intent is safe — the deploy engine runs
-`helm upgrade --install`, which is idempotent for an unchanged intent:
+For a stuck rollout, or to undo drift found in step 2, resubmitting the intent is safe — the deploy
+engine runs `helm upgrade --install`, which is idempotent for an unchanged intent:
 
 ```bash
-curl -s -X POST localhost:8000/deployments -H 'Content-Type: application/json' \
-  -d '{"name":"<release>","replicas":<n>,"environment":"<env>"}'
+curl -s -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{"name":"<release>","replicas":3,"environment":"dev"}'
 ```
 
 If the release must go, teardown is idempotent and leaves the cluster running:
 
 ```bash
 curl -s -X DELETE localhost:8000/deployments/<release>
-helm list --kube-context kind-nf-orchestrator
-kubectl --context kind-nf-orchestrator get pods -l app=<release>
 ```
 
 Expect `{"state":"NOT_INSTANTIATED","uninstalled":true}`, then no release and no pods. Called again
 on a name with no release it returns `uninstalled: false` rather than erroring.
+
+```bash
+helm list --kube-context kind-nf-orchestrator
+```
 
 ## What this runbook does not cover
 
