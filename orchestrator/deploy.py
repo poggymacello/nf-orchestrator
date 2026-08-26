@@ -80,6 +80,14 @@ def check_cluster() -> str:
     return run_kubectl(["get", "--raw=/readyz"]).strip()
 
 
+def list_releases() -> list[str]:
+    """Every Helm release name in the context, so something can iterate them."""
+    output = run_helm(
+        ["list", "--kube-context", KUBE_CONTEXT, "--output", "json"]
+    )
+    return [release["name"] for release in json.loads(output)]
+
+
 def deploy(intent: Intent) -> dict[str, Any]:
     values = render_values(intent)
     name = release_name(intent)
