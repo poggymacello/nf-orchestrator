@@ -140,16 +140,33 @@ Series count before and after: 3 and 3. FastAPI rejects the body before the hand
 
 ## What is not here
 
-- **The three failure drills and their postmortems** are Day 11 to Day 12, `(planned)`. Nothing in
-  this note is a drill; the failure counted above is a Helm ownership conflict produced to move the
-  metric, not an incident.
+- **The three failure drills and their postmortems.** Run on Day 11 to Day 13 and written up in
+  [operations/](../operations/README.md). Nothing in this note is a drill; the failure counted above
+  is a Helm ownership conflict produced to move the metric, not an incident.
 - **Prometheus and Grafana in CI.** `lint-test` runs `ruff` and `pytest` only. The counter is unit
   tested against the `prometheus_client` registry with the Helm call monkeypatched; no live
   Prometheus is involved. Running the stack against kind is `(planned, M5)`.
-- **Any metric other than this one.** No histogram of instantiate time, no reconciler metrics. The
-  M3 state transitions are observable but not yet instrumented.
+- **A histogram of instantiate time.** Still not measured.
 - **A persisted Grafana dashboard.** The panel above is provisioned from a JSON file for the length
   of the exercise; the monitoring stack was torn down afterwards and the kind cluster left running.
+
+## What came after this note
+
+Day 13 added a second kind of metric with a different shape, described in
+[ADR-0007](../design/adr/0007-stability-is-an-alerting-concern.md). `deployments_total` is a counter
+the application increments as things happen. `nf_deployment_state` and its companions are gauges
+produced by a **custom collector** that runs at scrape time: `LifecycleCollector` reconciles every
+Helm release when Prometheus asks, rather than caching a value the application updated earlier.
+
+That inverts the mental model at the top of this note in one specific way. The application still
+never pushes, but it is no longer only reporting a value it already had — the scrape itself is what
+causes the work to happen. It is the pattern every exporter uses, and it is what turned "the
+reconciler cannot report a transition nobody polled for" into "Prometheus is the thing polling".
+
+The gotcha below still applies, and applies harder to gauges emitted conditionally: during a cluster
+outage the collector emits `nf_cluster_reachable 0` and **no** `nf_deployment_state` series at all,
+so those series go stale rather than to zero. A panel over them shows a gap, which is why
+`nf_cluster_reachable` belongs next to any such panel.
 
 ## Sources
 
