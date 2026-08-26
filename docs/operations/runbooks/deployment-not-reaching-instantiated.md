@@ -110,12 +110,41 @@ incident. What counts as a *stable* state for alerting purposes is still an open
 
 ## 6. Recovery
 
-For a stuck rollout, or to undo drift found in step 2, resubmitting the intent is safe — the deploy
-engine runs `helm upgrade --install`, which is idempotent for an unchanged intent:
+**For a stuck rollout** — nothing outside Helm has touched the Deployment — resubmitting the intent
+is safe. The deploy engine runs `helm upgrade --install`, which is idempotent for an unchanged
+intent:
 
 ```bash
 curl -s -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{"name":"<release>","replicas":3,"environment":"dev"}'
 ```
+
+**For drift found in step 2, do not resubmit the intent.** It returns `502` with a server-side apply
+conflict, and the failed upgrade leaves the release in `status: failed`, which makes the endpoint
+report `FAILED` for a workload that is still running:
+
+```
+Error: UPGRADE FAILED: conflict occurred while applying object default/<release> apps/v1,
+Kind=Deployment: Apply failed with 1 conflict: conflict with "kubectl.exe" with subresource
+"scale" using apps/v1: .spec.replicas
+```
+
+`kubectl scale` took ownership of `.spec.replicas` as a server-side apply field manager, and Helm 4
+will not take it back without being told to. Repair by hand, with the flag the orchestrator does not
+pass:
+
+```bash
+helm upgrade <release> ./charts/stand-in-nf --kube-context kind-nf-orchestrator --set-json '{"replicaCount":3,"environment":"dev"}' --force-conflicts
+```
+
+That returns the release to `deployed` and clears the `FAILED` reading in the same step. Retrying
+the failing upgrade does **not** clear it — each retry appends another failed revision. Whether the
+orchestrator should pass `--force-conflicts` itself is
+[drill 3, action item 1](../postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md), still
+open.
+
+> Until 2026-08-26 this step said resubmitting the intent would undo drift. It does not, and it
+> makes the reported state worse. See the [drill-3
+> postmortem](../postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md).
 
 If the release must go, teardown is idempotent and leaves the cluster running:
 
