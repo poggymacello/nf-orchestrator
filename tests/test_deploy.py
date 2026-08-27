@@ -109,3 +109,72 @@ def test_unreachable_cluster_surfaces_as_503(monkeypatch: pytest.MonkeyPatch) ->
     response = client.post("/deployments", json=VALID)
     assert response.status_code == 503
     assert response.json()["detail"] == "Kubernetes cluster unreachable"
+
+
+def test_field_ownership_conflict_is_classified_apart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M4 drill 3: the exact wording Helm 4 produced when kubectl owned .spec.replicas."""
+    message = (
+        "conflict occurred while applying object default/stable-nf apps/v1, "
+        'Kind=Deployment: Apply failed with 1 conflict: conflict with "kubectl.exe" '
+        'with subresource "scale" using apps/v1: .spec.replicas'
+    )
+    assert isinstance(
+        deploy_engine.classify_error(message), deploy_engine.ClusterConflict
+    )
+
+
+def test_conflict_surfaces_as_409_pointing_at_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_helm(args: list[str]) -> str:
+        raise deploy_engine.ClusterConflict("conflict occurred while applying object")
+
+    monkeypatch.setattr(deploy_engine, "run_helm", fake_run_helm)
+    response = client.post("/deployments", json=VALID)
+    assert response.status_code == 409
+    assert "/repair" in response.json()["detail"]
+
+
+def test_deploy_never_forces_conflicts(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        deploy_engine, "run_helm", lambda args: captured.append(args) or HELM_OUTPUT
+    )
+    client.post("/deployments", json=VALID)
+    assert "--force-conflicts" not in captured[0]
+
+
+def test_repair_forces_conflicts(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        deploy_engine, "run_helm", lambda args: captured.append(args) or HELM_OUTPUT
+    )
+    response = client.post("/deployments/sample-nf/repair", json=VALID)
+    assert response.status_code == 200
+    assert response.json()["forced"] is True
+    assert "--force-conflicts" in captured[0]
+
+
+def test_repair_rejects_a_name_that_does_not_match_the_path() -> None:
+    response = client.post("/deployments/other-nf/repair", json=VALID)
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"]
+
+
+def test_repair_records_its_own_counter(monkeypatch: pytest.MonkeyPatch) -> None:
+    from orchestrator import metrics
+
+    def value() -> float:
+        return (
+            metrics.REGISTRY.get_sample_value(
+                "deployment_repairs_total", {"result": "success", "environment": "dev"}
+            )
+            or 0.0
+        )
+
+    monkeypatch.setattr(deploy_engine, "run_helm", lambda args: HELM_OUTPUT)
+    before = value()
+    client.post("/deployments/sample-nf/repair", json=VALID)
+    assert value() == before + 1
