@@ -209,3 +209,61 @@ def test_teardown_is_a_noop_when_absent(monkeypatch: pytest.MonkeyPatch) -> None
     response = client.delete("/deployments/ghost")
     assert response.status_code == 200
     assert response.json()["uninstalled"] is False
+
+
+# --- M4 drill 3: the intent in effect is the last one that deployed ---
+
+
+def history(*entries: tuple[int, str]) -> str:
+    return json.dumps([{"revision": r, "status": s} for r, s in entries])
+
+
+def test_last_deployed_revision_ignores_failed_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reconciler, "run_helm", lambda args: history((1, "deployed"), (2, "failed"))
+    )
+    assert reconciler.last_deployed_revision("sample-nf") == 1
+
+
+def test_last_deployed_revision_is_the_highest_not_the_latest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reconciler,
+        "run_helm",
+        lambda args: history((1, "deployed"), (2, "deployed"), (3, "failed")),
+    )
+    assert reconciler.last_deployed_revision("sample-nf") == 2
+
+
+def test_no_deployed_revision_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(reconciler, "run_helm", lambda args: history((1, "failed")))
+    assert reconciler.last_deployed_revision("sample-nf") is None
+
+
+def test_desired_replicas_reads_the_deployed_revision_not_the_latest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 3: a failed upgrade leaves its values on the release without applying them."""
+    calls: list[list[str]] = []
+
+    def fake_run_helm(args: list[str]) -> str:
+        calls.append(args)
+        if args[0] == "history":
+            return history((1, "deployed"), (2, "failed"))
+        return json.dumps({"replicaCount": 2, "environment": "dev"})
+
+    monkeypatch.setattr(reconciler, "run_helm", fake_run_helm)
+
+    assert reconciler.desired_replicas("sample-nf") == 2
+    values_call = calls[1]
+    assert values_call[values_call.index("--revision") + 1] == "1"
+
+
+def test_desired_replicas_is_zero_when_nothing_ever_deployed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reconciler, "run_helm", lambda args: history((1, "failed")))
+    assert reconciler.desired_replicas("sample-nf") == 0
