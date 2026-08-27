@@ -80,14 +80,40 @@ def helm_release_status(name: str) -> str | None:
     return json.loads(output)["info"]["status"]
 
 
-def desired_replicas(name: str) -> int:
-    """Read back the replica count the intent asked for, from the release's own values.
+def last_deployed_revision(name: str) -> int | None:
+    """The highest revision that actually reached `deployed`, or None if none did.
 
-    `--all` includes chart defaults, so this answers even for a release deployed without
-    an explicit replicaCount. This is deliberately the release's values and not the
-    Deployment's `spec.replicas`: if something scaled the Deployment outside Helm, the
-    intent is still the number to hold the cluster against.
+    `helm get values` without a revision returns the *latest* revision's values, which
+    includes an upgrade that failed and never applied. Reading that would report a
+    desired count from an intent the cluster rejected.
     """
+    output = run_helm(
+        ["history", name, "--kube-context", KUBE_CONTEXT, "--output", "json"]
+    )
+    revisions = [
+        entry["revision"]
+        for entry in json.loads(output)
+        if entry.get("status") == "deployed"
+    ]
+    return max(revisions) if revisions else None
+
+
+def desired_replicas(name: str) -> int:
+    """The replica count of the intent that is actually in effect.
+
+    Read from the last *deployed* revision's values, not the latest revision's: a
+    failed upgrade leaves its values on the release without ever having applied them.
+    `--all` includes chart defaults, so this answers even for a release deployed
+    without an explicit replicaCount.
+
+    Deliberately not the Deployment's `spec.replicas`: if something scaled the
+    Deployment outside Helm, the intent is still the number to hold the cluster
+    against. Returns 0 when no revision ever deployed, because then no intent is in
+    effect and there is nothing to hold it against.
+    """
+    revision = last_deployed_revision(name)
+    if revision is None:
+        return 0
     output = run_helm(
         [
             "get",
@@ -95,6 +121,8 @@ def desired_replicas(name: str) -> int:
             name,
             "--kube-context",
             KUBE_CONTEXT,
+            "--revision",
+            str(revision),
             "--all",
             "--output",
             "json",
