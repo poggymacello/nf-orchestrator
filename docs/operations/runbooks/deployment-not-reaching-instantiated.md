@@ -118,33 +118,39 @@ intent:
 curl -s -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{"name":"<release>","replicas":3,"environment":"dev"}'
 ```
 
-**For drift found in step 2, do not resubmit the intent.** It returns `502` with a server-side apply
-conflict, and the failed upgrade leaves the release in `status: failed`, which makes the endpoint
-report `FAILED` for a workload that is still running:
+**For drift found in step 2, use the repair route.** A plain resubmit returns `409`, because
+`kubectl scale` took ownership of `.spec.replicas` as a server-side apply field manager and Helm
+will not take it back without being told to:
 
 ```
-Error: UPGRADE FAILED: conflict occurred while applying object default/<release> apps/v1,
-Kind=Deployment: Apply failed with 1 conflict: conflict with "kubectl.exe" with subresource
-"scale" using apps/v1: .spec.replicas
+conflict occurred while applying object default/<release> apps/v1, Kind=Deployment: Apply
+failed with 1 conflict: conflict with "kubectl.exe" with subresource "scale" using apps/v1:
+.spec.replicas -- another field manager owns a field this intent would change. Resubmitting
+will not help. To take ownership, POST the same intent to /deployments/{name}/repair.
 ```
 
-`kubectl scale` took ownership of `.spec.replicas` as a server-side apply field manager, and Helm 4
-will not take it back without being told to. Repair by hand, with the flag the orchestrator does not
-pass:
+Repair takes the intent you want in effect and applies it with `--force-conflicts`:
 
 ```bash
-helm upgrade <release> ./charts/stand-in-nf --kube-context kind-nf-orchestrator --set-json '{"replicaCount":3,"environment":"dev"}' --force-conflicts
+curl -s -X POST localhost:8000/deployments/<release>/repair -H 'Content-Type: application/json' -d '{"name":"<release>","replicas":3,"environment":"dev"}'
 ```
 
-That returns the release to `deployed` and clears the `FAILED` reading in the same step. Retrying
-the failing upgrade does **not** clear it — each retry appends another failed revision. Whether the
-orchestrator should pass `--force-conflicts` itself is
-[drill 3, action item 1](../postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md), still
-open.
+Expect `"forced": true` and a new revision. That returns the release to `deployed` and clears a
+`FAILED` reading in the same step. Retrying the plain deploy does **not** clear it — each attempt
+appends another failed revision.
 
-> Until 2026-08-26 this step said resubmitting the intent would undo drift. It does not, and it
-> makes the reported state worse. See the [drill-3
-> postmortem](../postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md).
+**Repair is an override.** It takes ownership of the contested field from whatever held it. If the
+other manager was an autoscaler doing its job, repairing makes the orchestrator win and the
+autoscaler lose. Check what wrote the field before forcing it back:
+
+```bash
+kubectl --context kind-nf-orchestrator get deployment <release> --show-managed-fields -o yaml | grep -A3 'manager:'
+```
+
+> Until 2026-08-26 this step said resubmitting the intent would undo drift. It does not. Until
+> 2026-08-27 the repair had to be run as a raw `helm upgrade --force-conflicts` by hand. See
+> [drill 3](../postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) and
+> [ADR-0008](../../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md).
 
 If the release must go, teardown is idempotent and leaves the cluster running:
 
