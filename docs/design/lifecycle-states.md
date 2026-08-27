@@ -38,7 +38,10 @@ uninstalls the release and returns `NOT_INSTANTIATED`. The derivation is a pure 
 the [M3 build log](../build-log/m3-reconciler.md). State is derived on read, not stored.
 
 Since M4 the response also carries `desired_replicas` and `ready_replicas`, so the numbers the
-state depends on are visible next to it.
+state depends on are visible next to it. `desired_replicas` is read from the last revision that
+actually **deployed**, not the last one submitted: a failed upgrade leaves its values on the release
+without ever having applied them
+([ADR-0008](adr/0008-forcing-field-ownership-is-an-explicit-operation.md)).
 
 **There is no state for "I cannot see the cluster".** If the control plane is unreachable, the
 reconciler raises rather than answering, and the endpoint returns `503`. This matters because the
@@ -48,9 +51,16 @@ happened. `/healthz` is process liveness only; `/readyz` reports whether the clu
 reached. See [ADR-0006](adr/0006-instantiated-means-the-intent-is-satisfied.md) and the
 [drill-2 postmortem](../operations/postmortems/2026-08-20-drill-2-control-plane-unreachable.md).
 
-Still `(planned)`: any push/event stream for these transitions. The reconciler polls on request and
-cannot report a transition nobody polled for. State also still flaps across reads during a normal
-rollout, honestly now — deciding what a *stable* state means is open.
+Since M4 the state is also emitted as a metric. A collector on `/metrics` reconciles every release
+at scrape time and exposes `nf_deployment_state{release,state}`, so a deployment is observed on an
+interval whether or not anyone calls the API. The state still flaps across reads during a normal
+rollout — honestly, because readiness really does drop while pods are replaced — and *stable* is
+defined in the alerting rule's `for:` window rather than in the application. See
+[ADR-0007](adr/0007-stability-is-an-alerting-concern.md) and
+[`monitoring/nf-lifecycle.rules.yml`](../../monitoring/nf-lifecycle.rules.yml).
+
+Still `(planned)`: any push/event stream. Prometheus scraping is a poll on a timer, not a
+notification, so a transition between two scrapes is still never seen.
 
 ## Why these states exist
 
