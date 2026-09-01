@@ -1,6 +1,6 @@
 # Postmortem — Drill 3: repairing drift the orchestrator did not cause
 
-**Date:** 2026-08-26 · **Severity:** Sev-1 · **Status:** findings 1 and 3 fixed, finding 2 open ·
+**Date:** 2026-08-26 · **Severity:** Sev-1 · **Status:** all findings fixed ·
 **Found:** accidentally, then reproduced deliberately
 
 **Summary:** An operator scales a Deployment outside Helm. The orchestrator correctly reports the
@@ -141,7 +141,7 @@ be genuinely executed and still be documented for the wrong situation.
 | # | Finding | Action | Status |
 |---|---|---|---|
 | 1 | Drift is visible but unrepairable through the API | Decide in an ADR whether the deploy engine should pass `--force-conflicts`, always or on an explicit repair path. Do not patch it silently | **fixed 2026-08-27** — the deploy path never forces; conflicts return `409` and `POST /deployments/{name}/repair` forces explicitly ([ADR-0008](../../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md)) |
-| 2 | A failed Helm operation is reported as a failed deployment | Consider separating operation state from instantiation state, as ETSI SOL003 does, rather than mapping `helm_status == "failed"` to `FAILED` | open — a successful repair clears it, but the mapping itself is unchanged |
+| 2 | A failed Helm operation is reported as a failed deployment | Consider separating operation state from instantiation state, as ETSI SOL003 does, rather than mapping `helm_status == "failed"` to `FAILED` | **fixed 2026-09-01** — the four states describe the NF only; the operation is reported as `last_operation` and as `nf_last_operation_state` ([ADR-0009](../../design/adr/0009-the-operation-is-not-the-network-function.md)) |
 | 3 | Runbook step 6 told operators to do the thing that breaks | Corrected, with the tested `--force-conflicts` command and a warning about the poisoned state | **fixed 2026-08-26** |
 
 ## Reproduce
@@ -181,3 +181,21 @@ $ curl -s localhost:8000/deployments/repair-nf   # before the fix
 `desired_replicas` now reads the last revision whose status is `deployed`, and reports 2 — what is
 actually running. This drill's finding 1 and this bug are the same confusion in two places: what was
 submitted is not what is in effect.
+
+## Follow-up, 2026-09-01
+
+Finding 2 is fixed. `derive_state` no longer maps a failed Helm operation to a failed NF, and the
+operation is reported beside the state:
+
+```
+after the same conflicting upgrade, rebuilt on 2026-09-01:
+{"state":"INSTANTIATING","helm_status":"failed","desired_replicas":2,"ready_replicas":1,
+ "last_operation":{"revision":2,"state":"FAILED","description":"Upgrade ... conflict occurred ..."}}
+```
+
+On day 14 that same situation read `FAILED`. The NF is now described by the four states and the
+operation by `last_operation`, which is the ETSI SOL003 split this project had collapsed since M3.
+Reasoning, and the one case where a failed operation still produces `FAILED`, in
+[ADR-0009](../../design/adr/0009-the-operation-is-not-the-network-function.md).
+
+That closes every finding from all three M4 drills.
