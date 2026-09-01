@@ -54,3 +54,17 @@ groups:
             No release series are being written while this fires. Do not read the
             absence of nf_deployment_state as deployments being gone — follow
             runbooks/control-plane-unreachable.md.
+
+      - alert: NFLastOperationFailed
+        expr: nf_last_operation_state{state="FAILED"} == 1
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.release }}'s last lifecycle operation failed"
+          description: >-
+            The network function may be perfectly healthy — this is about the
+            operation, not the NF. Check the state separately. A failed operation stays
+            recorded until something succeeds, so this fires on an unresolved failure
+            nobody has cleared. Longer window than the NF alerts because it is not an
+            outage.
