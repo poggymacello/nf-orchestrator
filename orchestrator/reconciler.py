@@ -14,10 +14,39 @@ RELEASE_NOT_FOUND = "not found"
 
 
 class State(str, Enum):
+    """What is true of the network function itself."""
+
     NOT_INSTANTIATED = "NOT_INSTANTIATED"
     INSTANTIATING = "INSTANTIATING"
     INSTANTIATED = "INSTANTIATED"
     FAILED = "FAILED"
+
+
+class OperationState(str, Enum):
+    """What happened to the last lifecycle operation, separately from the NF.
+
+    A subset of ETSI SOL003's LcmOperationStateType. UNKNOWN exists so that a Helm
+    status nobody anticipated does not quietly land in a bucket that means something
+    specific — the mistake drill 1 found when `Succeeded` fell through to
+    INSTANTIATING.
+    """
+
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
+
+
+OPERATION_STATUS = {
+    "deployed": OperationState.COMPLETED,
+    "uninstalled": OperationState.COMPLETED,
+    "superseded": OperationState.COMPLETED,
+    "failed": OperationState.FAILED,
+    "pending-install": OperationState.PROCESSING,
+    "pending-upgrade": OperationState.PROCESSING,
+    "pending-rollback": OperationState.PROCESSING,
+    "uninstalling": OperationState.PROCESSING,
+}
 
 
 FAILED_POD_REASONS = frozenset(
@@ -30,24 +59,31 @@ TERMINAL_POD_PHASES = frozenset({"Succeeded", "Failed"})
 
 
 def derive_state(
-    helm_status: str | None, pods: list[dict[str, Any]], desired: int
+    helm_status: str | None,
+    pods: list[dict[str, Any]],
+    desired: int,
+    operation: OperationState = OperationState.UNKNOWN,
+    ever_deployed: bool = True,
 ) -> State:
-    """Project a Helm release status, the live pods, and the desired count onto one state.
+    """Project the live signals onto one state describing the network function.
 
-    helm_status is the release's `status` field (`deployed`, `failed`, ...) or None when
-    no release exists. pods is one {"phase", "reason", "ready"} dict per non-terminating
-    pod carrying the release's selector. desired is the replica count the intent asked
-    for, read back from the release's values.
+    helm_status is the release's `status` field, or None when no release exists. pods is
+    one {"phase", "reason", "ready"} dict per non-terminating pod carrying the release's
+    selector. desired is the replica count of the intent in effect. operation and
+    ever_deployed describe the *last operation*, not the NF.
 
-    INSTANTIATED means the intent is satisfied: exactly `desired` pods exist and every one
-    of them is ready. It is not enough for the pods that happen to exist to look healthy —
-    that was the M4 drill-1 defect, where one running pod of a three-replica intent, and
-    six pods of the same intent, both reported INSTANTIATED.
+    INSTANTIATED means the intent is satisfied: exactly `desired` pods exist and every
+    one of them is ready. It is not enough for the pods that happen to exist to look
+    healthy — the M4 drill-1 defect, where one running pod of a three-replica intent,
+    and six pods of the same intent, both reported INSTANTIATED.
+
+    A failed operation is deliberately **not** a failed NF. Until M4 a `failed` release
+    status alone returned FAILED, so a rejected upgrade made a workload that was still
+    serving read FAILED with nothing about it having changed (drill 3, finding 2). The
+    operation is reported separately; see ADR-0009.
     """
     if helm_status is None:
         return State.NOT_INSTANTIATED
-    if helm_status == "failed":
-        return State.FAILED
 
     reasons = {pod.get("reason") for pod in pods}
     if reasons & FAILED_POD_REASONS:
@@ -57,6 +93,12 @@ def derive_state(
 
     if desired > 0 and len(pods) == desired and all(pod.get("ready") for pod in pods):
         return State.INSTANTIATED
+
+    # A release that never deployed anything, whose attempt to do so failed, will not
+    # progress on its own. Without this it would report INSTANTIATING indefinitely.
+    if not ever_deployed and operation is OperationState.FAILED:
+        return State.FAILED
+
     return State.INSTANTIATING
 
 
@@ -80,6 +122,43 @@ def helm_release_status(name: str) -> str | None:
     return json.loads(output)["info"]["status"]
 
 
+def release_history(name: str) -> list[dict[str, Any]]:
+    """Every revision Helm still holds for the release, newest last."""
+    output = run_helm(
+        ["history", name, "--kube-context", KUBE_CONTEXT, "--output", "json"]
+    )
+    return json.loads(output)
+
+
+def deployed_revision(history: list[dict[str, Any]]) -> int | None:
+    """The highest revision that actually reached `deployed`, or None if none did."""
+    revisions = [
+        entry["revision"] for entry in history if entry.get("status") == "deployed"
+    ]
+    return max(revisions) if revisions else None
+
+
+def last_operation(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """What happened to the most recent lifecycle operation, whatever the NF is doing.
+
+    Reported alongside the state rather than folded into it: a failed upgrade is a
+    fact about an operation, not about the network function that is still serving.
+    """
+    if not history:
+        return {
+            "revision": None,
+            "state": OperationState.UNKNOWN.value,
+            "description": None,
+        }
+    latest = max(history, key=lambda entry: entry["revision"])
+    state = OPERATION_STATUS.get(latest.get("status"), OperationState.UNKNOWN)
+    return {
+        "revision": latest["revision"],
+        "state": state.value,
+        "description": latest.get("description"),
+    }
+
+
 def last_deployed_revision(name: str) -> int | None:
     """The highest revision that actually reached `deployed`, or None if none did.
 
@@ -87,18 +166,10 @@ def last_deployed_revision(name: str) -> int | None:
     includes an upgrade that failed and never applied. Reading that would report a
     desired count from an intent the cluster rejected.
     """
-    output = run_helm(
-        ["history", name, "--kube-context", KUBE_CONTEXT, "--output", "json"]
-    )
-    revisions = [
-        entry["revision"]
-        for entry in json.loads(output)
-        if entry.get("status") == "deployed"
-    ]
-    return max(revisions) if revisions else None
+    return deployed_revision(release_history(name))
 
 
-def desired_replicas(name: str) -> int:
+def desired_replicas(name: str, history: list[dict[str, Any]] | None = None) -> int:
     """The replica count of the intent that is actually in effect.
 
     Read from the last *deployed* revision's values, not the latest revision's: a
@@ -111,7 +182,9 @@ def desired_replicas(name: str) -> int:
     against. Returns 0 when no revision ever deployed, because then no intent is in
     effect and there is nothing to hold it against.
     """
-    revision = last_deployed_revision(name)
+    revision = deployed_revision(
+        release_history(name) if history is None else history
+    )
     if revision is None:
         return 0
     output = run_helm(
@@ -172,16 +245,27 @@ def reconcile(name: str) -> dict[str, Any]:
             "helm_status": None,
             "desired_replicas": 0,
             "ready_replicas": 0,
+            "last_operation": last_operation([]),
             "pods": [],
         }
-    desired = desired_replicas(name)
+    history = release_history(name)
+    operation = last_operation(history)
+    desired = desired_replicas(name, history)
     pods = pod_states(name)
+    state = derive_state(
+        helm_status,
+        pods,
+        desired,
+        operation=OperationState(operation["state"]),
+        ever_deployed=deployed_revision(history) is not None,
+    )
     return {
         "release": name,
-        "state": derive_state(helm_status, pods, desired).value,
+        "state": state.value,
         "helm_status": helm_status,
         "desired_replicas": desired,
         "ready_replicas": sum(1 for pod in pods if pod.get("ready")),
+        "last_operation": operation,
         "pods": pods,
     }
 
