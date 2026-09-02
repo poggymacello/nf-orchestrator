@@ -25,8 +25,8 @@ Signals in the last column are what the reconciler read to derive each transitio
 | Transition | Trigger | Underlying signal the reconciler derived from | Status |
 |---|---|---|---|
 | `NOT_INSTANTIATED` → `INSTANTIATING` | Intent submitted, deploy engine calls `helm upgrade --install` | Helm release status is `deployed` and pods are not all `Running` yet. Observed: `helm=deployed pods=[('Pending','ContainerCreating'),('Pending','ContainerCreating')]` at 08:11:43 | emitted by the reconciler (M3) |
-| `INSTANTIATING` → `INSTANTIATED` | Every pod reaches `Running` | All pod phases are `Running`. Observed one second later: `helm=deployed pods=[('Running',None),('Running',None)]` at 08:11:44 | emitted by the reconciler (M3) |
-| `INSTANTIATING` → `FAILED` | A pod cannot become healthy | Any pod waiting-reason in `ImagePullBackOff` / `ErrImagePull` / `CrashLoopBackOff`. Observed by upgrading to a nonexistent image tag: `helm=deployed pods=[('Pending','ErrImagePull'),('Running',None),('Running',None)]` at 08:14:16, settling to `ImagePullBackOff`. `helm status` stayed `deployed` the whole time, so the state came from the pod reason, not the release | emitted by the reconciler (M3) |
+| `INSTANTIATING` → `INSTANTIATED` | The intent is satisfied: as many ready pods as the intent asked for | Pod count equals the release's `replicaCount` and every pod's containers report `ready`. Observed on 2026-08-21 after the M4 fixes: `desired=3 ready=3 pods_counted=3`. Until M4 this was "all pod phases are `Running`", which reported `INSTANTIATED` for one pod of a three-replica intent — see [ADR-0006](adr/0006-instantiated-means-the-intent-is-satisfied.md) | emitted by the reconciler (M3, revised M4) |
+| `INSTANTIATING` → `FAILED` | A pod cannot become healthy, or stopped and was not replaced | Any pod waiting-reason in `ImagePullBackOff` / `ErrImagePull` / `CrashLoopBackOff`, or any non-terminating pod in phase `Succeeded` / `Failed`. Observed by upgrading to a nonexistent image tag: `helm=deployed pods=[('Pending','ErrImagePull'),('Running',None),('Running',None)]` at 08:14:16, settling to `ImagePullBackOff`. `helm status` stayed `deployed` the whole time, so the state came from the pod signal, not the release | emitted by the reconciler (M3, revised M4) |
 | `INSTANTIATED` / `FAILED` → `NOT_INSTANTIATED` | Teardown | `DELETE /deployments/{name}` runs `helm uninstall`; the next read finds no release. Observed: `{"state":"NOT_INSTANTIATED","uninstalled":true}`, then `helm list` shows the release gone and no pods remain | emitted by the reconciler (M3) |
 
 ## What exists today vs planned
@@ -37,8 +37,20 @@ uninstalls the release and returns `NOT_INSTANTIATED`. The derivation is a pure 
 `derive_state`, described in [ADR-0005](adr/0005-derive-lifecycle-state-from-cluster-signals.md) and
 the [M3 build log](../build-log/m3-reconciler.md). State is derived on read, not stored.
 
-Still `(planned)`: metrics and any push/event stream for these transitions are M4. The reconciler
-polls on request and cannot report a transition nobody polled for.
+Since M4 the response also carries `desired_replicas` and `ready_replicas`, so the numbers the
+state depends on are visible next to it.
+
+**There is no state for "I cannot see the cluster".** If the control plane is unreachable, the
+reconciler raises rather than answering, and the endpoint returns `503`. This matters because the
+four states are claims about the NF, and an outage is not one: reporting `NOT_INSTANTIATED` in that
+situation — which is what the reconciler did until 2026-08-21 — announces a teardown that never
+happened. `/healthz` is process liveness only; `/readyz` reports whether the cluster can be
+reached. See [ADR-0006](adr/0006-instantiated-means-the-intent-is-satisfied.md) and the
+[drill-2 postmortem](../operations/postmortems/2026-08-20-drill-2-control-plane-unreachable.md).
+
+Still `(planned)`: any push/event stream for these transitions. The reconciler polls on request and
+cannot report a transition nobody polled for. State also still flaps across reads during a normal
+rollout, honestly now — deciding what a *stable* state means is open.
 
 ## Why these states exist
 
