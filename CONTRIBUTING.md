@@ -35,9 +35,21 @@ anything non-public.
 
 ## CI gates
 
-CI today is one job, `lint-test`, running `ruff check .` and `pytest`. It triggers on push to
-`main` and on pull requests. Everything below is `(planned, M5)` and is not running yet, so the
-leak-scrub above is a manual step before every commit.
+CI is two jobs, and triggers on every branch push as well as on pull requests.
+
+- **`lint-test`** runs `ruff check .` and `pytest`. No cluster: the end-to-end tests skip
+  themselves unless `NF_E2E=1`.
+- **`e2e`** (M5) creates a kind cluster with Helm 4 pinned, then runs `pytest tests/e2e`, which
+  asserts the ground the M4 failure drills covered by hand — a deploy reaching `INSTANTIATED`,
+  drift outside Helm showing as a shortfall, a conflicting resubmit refused with `409`, repair
+  taking the field back, a bad image tag reaching `FAILED`, and idempotent teardown. Run it
+  locally with `make up && make e2e`.
+
+Third-party actions are pinned to a commit rather than a tag, because a tag can be moved onto
+different code.
+
+Everything below is `(planned, M5)` and is not running yet, so the leak-scrub above is still a
+manual step before every commit.
 
 - **Gitleaks** to scan for accidental secrets. `(planned, M5)`
 - A **banned-terms grep** to fail the build on any private term, with the list kept outside this
