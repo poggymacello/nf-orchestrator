@@ -1,13 +1,27 @@
 name: CI
 
+# Runs on every branch push, not only on main and pull requests. This project does its
+# work on long-lived day branches, and until M5 none of them had ever been through CI.
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run pointless, and the e2e job costs
+# a cluster.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,4 +29,51 @@ jobs:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
       - run: ruff check .
+      # The e2e tests skip themselves without NF_E2E, so this stays a no-cluster run.
       - run: pytest
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+
+      # Third-party actions are pinned to a commit rather than a tag: a tag can be
+      # moved onto different code, a commit cannot.
+      #
+      # Helm 4 specifically. The M4 drill-3 behaviour this job asserts — a server-side
+      # apply conflict, and --force-conflicts taking the field back — does not exist in
+      # Helm 3, which would merge client-side and silently win.
+      - name: Install Helm 4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v4.2.2
+
+      - name: Create the kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          cluster_name: nf-orchestrator
+          config: kind-config.yaml
+
+      - name: Record the versions this run actually used
+        run: |
+          helm version --short
+          kubectl version --client=true
+          kubectl config current-context
+          kubectl --context kind-nf-orchestrator get nodes
+
+      - name: End-to-end lifecycle against the cluster
+        run: pytest tests/e2e -v
+        env:
+          NF_E2E: "1"
+
+      - name: Cluster diagnostics
+        if: failure()
+        run: |
+          kubectl --context kind-nf-orchestrator get pods -A
+          kubectl --context kind-nf-orchestrator get events --sort-by=.lastTimestamp | tail -40
+          helm list --kube-context kind-nf-orchestrator --all
