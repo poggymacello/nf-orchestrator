@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-02 | 16 | Get kind into CI so the M4 failure drills run on every push instead of only on this laptop | [2026-09-02](2026-09-02.md) |
 | 2026-09-01 | 15 | Split the network function's state from the last operation's, closing the final M4 drill finding | [2026-09-01](2026-09-01.md) |
 | 2026-08-27 | 14 | Decide whether the deploy engine forces apply conflicts, and find that the desired replica count had been read from a rejected intent | [2026-08-27](2026-08-27.md) |
 | 2026-08-26 | 13 | Answer what a stable lifecycle state means, prove it with real alert rules, and find a bug that made the day-12 runbook wrong | [2026-08-26](2026-08-26.md) |
