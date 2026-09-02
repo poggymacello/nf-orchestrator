@@ -1,0 +1,56 @@
+# Lifecycle alerting rules.
+#
+# Every rule here carries a `for:` clause, and that is the point. The lifecycle state
+# is derived per scrape, so a single sample is an instant, not a state: a routine pod
+# replacement moves a release out of INSTANTIATED for a second or two with nothing
+# wrong. `for:` is where "stable" is defined — the condition must hold across every
+# evaluation in the window before the alert fires. See ADR-0007.
+groups:
+  - name: nf-lifecycle
+    rules:
+      - alert: NFNotInstantiated
+        expr: nf_deployment_state{state="INSTANTIATED"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.release }} has not been INSTANTIATED for 2 minutes"
+          description: >-
+            The release exists but the intent is not satisfied. Check
+            nf_deployment_ready_replicas against nf_deployment_desired_replicas, then
+            follow runbooks/deployment-not-reaching-instantiated.md.
+
+      - alert: NFFailed
+        expr: nf_deployment_state{state="FAILED"} == 1
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.release }} is FAILED"
+          description: >-
+            A pod cannot become healthy, or stopped and was not replaced. Shorter
+            window than NFNotInstantiated because FAILED is already a settled
+            judgement rather than a rollout in progress.
+
+      - alert: NFReplicaShortfall
+        expr: nf_deployment_ready_replicas < nf_deployment_desired_replicas
+        for: 2m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.release }} is short of the replicas its intent asked for"
+          description: >-
+            Fires on drift as well as on a stuck rollout: something may have scaled
+            the Deployment outside Helm.
+
+      - alert: ClusterUnreachable
+        expr: nf_cluster_reachable == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "The orchestrator cannot reach the cluster"
+          description: >-
+            No release series are being written while this fires. Do not read the
+            absence of nf_deployment_state as deployments being gone — follow
+            runbooks/control-plane-unreachable.md.
