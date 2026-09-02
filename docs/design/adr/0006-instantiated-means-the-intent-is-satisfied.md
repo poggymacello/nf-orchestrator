@@ -1,6 +1,7 @@
 # ADR-0006: INSTANTIATED means the intent is satisfied, and "unreachable" is not a state
 
-- **Status:** Accepted
+- **Status:** Accepted, one row superseded by
+  [ADR-0009](0009-the-operation-is-not-the-network-function.md) (2026-09-01)
 - **Date:** 2026-08-21
 - **Supersedes:** the derivation table and the two signal readers in
   [ADR-0005](0005-derive-lifecycle-state-from-cluster-signals.md). Everything else in ADR-0005 —
@@ -91,7 +92,7 @@ reads it. Drill 1's wrong answer would have been obvious in the payload.
 |---|---|
 | no Helm release (`release: not found`) | `NOT_INSTANTIATED` |
 | cluster unreachable | no state — `ClusterUnreachable` → HTTP 503 |
-| Helm release status is `failed` | `FAILED` |
+| Helm release status is `failed` | ~~`FAILED`~~ — superseded by [ADR-0009](0009-the-operation-is-not-the-network-function.md): a failed *operation* is not a failed NF, and is reported separately as `last_operation` |
 | any pod waiting-reason in {`ImagePullBackOff`, `ErrImagePull`, `CrashLoopBackOff`} | `FAILED` |
 | any non-terminating pod in phase `Succeeded` or `Failed` | `FAILED` |
 | `desired > 0`, pod count == `desired`, every pod ready | `INSTANTIATED` |

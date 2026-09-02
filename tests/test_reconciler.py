@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from orchestrator import app, reconciler
 from orchestrator.deploy import ClusterUnreachable, DeployError
-from orchestrator.reconciler import State, derive_state
+from orchestrator.reconciler import OperationState, State, derive_state
 
 client = TestClient(app)
 
@@ -46,8 +46,22 @@ def test_crash_loop_is_failed() -> None:
     assert derive_state("deployed", pods, 1) is State.FAILED
 
 
-def test_failed_helm_release_is_failed() -> None:
-    assert derive_state("failed", ready(1), 1) is State.FAILED
+def test_a_failed_operation_is_not_a_failed_nf() -> None:
+    """Drill 3, finding 2: a rejected upgrade made a serving workload read FAILED."""
+    assert derive_state("failed", ready(1), 1) is State.INSTANTIATED
+
+
+def test_a_failed_first_install_that_deployed_nothing_is_failed() -> None:
+    """Without this it would report INSTANTIATING forever: nothing will progress."""
+    state = derive_state(
+        "failed", [], 0, operation=OperationState.FAILED, ever_deployed=False
+    )
+    assert state is State.FAILED
+
+
+def test_a_failed_operation_over_an_unhealthy_workload_is_still_failed() -> None:
+    pods = [{"phase": "Pending", "reason": "ImagePullBackOff", "ready": False}]
+    assert derive_state("failed", pods, 1) is State.FAILED
 
 
 # --- M4 drill 1: INSTANTIATED must mean the intent is satisfied ---
@@ -161,7 +175,10 @@ def test_status_endpoint_returns_503_when_cluster_unreachable(
 
 def test_status_endpoint_reports_derived_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reconciler, "helm_release_status", lambda name: "deployed")
-    monkeypatch.setattr(reconciler, "desired_replicas", lambda name: 1)
+    monkeypatch.setattr(
+        reconciler, "release_history", lambda name: [{"revision": 1, "status": "deployed"}]
+    )
+    monkeypatch.setattr(reconciler, "desired_replicas", lambda name, history=None: 1)
     monkeypatch.setattr(reconciler, "pod_states", lambda name: ready(1))
     response = client.get("/deployments/sample-nf")
     assert response.status_code == 200
@@ -173,7 +190,10 @@ def test_status_endpoint_reports_derived_state(monkeypatch: pytest.MonkeyPatch) 
 
 def test_status_endpoint_shows_the_shortfall(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reconciler, "helm_release_status", lambda name: "deployed")
-    monkeypatch.setattr(reconciler, "desired_replicas", lambda name: 3)
+    monkeypatch.setattr(
+        reconciler, "release_history", lambda name: [{"revision": 1, "status": "deployed"}]
+    )
+    monkeypatch.setattr(reconciler, "desired_replicas", lambda name, history=None: 3)
     monkeypatch.setattr(reconciler, "pod_states", lambda name: ready(1))
     body = client.get("/deployments/sample-nf").json()
     assert body["state"] == "INSTANTIATING"
@@ -267,3 +287,56 @@ def test_desired_replicas_is_zero_when_nothing_ever_deployed(
 ) -> None:
     monkeypatch.setattr(reconciler, "run_helm", lambda args: history((1, "failed")))
     assert reconciler.desired_replicas("sample-nf") == 0
+
+
+# --- M4 drill 3, finding 2: the operation is reported apart from the NF ---
+
+
+def op(*entries: tuple[int, str]) -> list[dict[str, object]]:
+    return [
+        {"revision": r, "status": s, "description": f"revision {r} {s}"}
+        for r, s in entries
+    ]
+
+
+def test_last_operation_reads_the_newest_revision() -> None:
+    result = reconciler.last_operation(op((1, "deployed"), (2, "failed")))
+    assert result["revision"] == 2
+    assert result["state"] == "FAILED"
+    assert result["description"] == "revision 2 failed"
+
+
+def test_a_completed_operation_is_reported_as_completed() -> None:
+    assert reconciler.last_operation(op((1, "deployed")))["state"] == "COMPLETED"
+
+
+def test_an_in_flight_operation_is_processing() -> None:
+    assert reconciler.last_operation(op((1, "pending-upgrade")))["state"] == "PROCESSING"
+
+
+def test_an_unrecognised_helm_status_is_unknown_not_something_specific() -> None:
+    """Drill 1's lesson: a fall-through must not mean something in particular."""
+    assert reconciler.last_operation(op((1, "invented-tomorrow")))["state"] == "UNKNOWN"
+
+
+def test_no_history_is_unknown() -> None:
+    result = reconciler.last_operation([])
+    assert result == {"revision": None, "state": "UNKNOWN", "description": None}
+
+
+def test_status_endpoint_reports_the_operation_beside_the_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The drill-3 case: a failed upgrade over a workload that is still serving."""
+    monkeypatch.setattr(reconciler, "helm_release_status", lambda name: "failed")
+    monkeypatch.setattr(
+        reconciler, "release_history", lambda name: op((1, "deployed"), (2, "failed"))
+    )
+    monkeypatch.setattr(reconciler, "desired_replicas", lambda name, history=None: 2)
+    monkeypatch.setattr(reconciler, "pod_states", lambda name: ready(1))
+
+    body = client.get("/deployments/sample-nf").json()
+    assert body["state"] == "INSTANTIATING"
+    assert body["helm_status"] == "failed"
+    assert body["last_operation"]["state"] == "FAILED"
+    assert body["last_operation"]["revision"] == 2
