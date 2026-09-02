@@ -26,13 +26,19 @@ so instead of pretending the tool is trustworthy.
    that no longer exists. A runbook describing a fixed bug is as misleading as one describing an
    imagined system.
 
+Drill 3 added a corollary to step 5. A command can be genuinely executed during a drill and still be
+documented for the wrong situation: the "resubmit the intent" step was run for real, but in a drill
+where nothing had touched the Deployment, so it succeeded for reasons unrelated to the repair it was
+later recommended for. Ask what the step is being claimed to fix, not just whether it ran.
+
 ## Drills run so far
 
 | # | Drill | Date | Outcome | Postmortem |
 |---|---|---|---|---|
 | 1 | Pods killed mid-deploy | 2026-08-20 | 4 findings — the reconciler reported `INSTANTIATED` without ever checking how many replicas the intent asked for. 1-3 fixed 2026-08-21 | [drill-1](postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) |
 | 2 | Control plane unreachable | 2026-08-20 | 4 findings — a running NF was reported as `NOT_INSTANTIATED` with HTTP 200 while the cluster was unreachable. 1-3 fixed 2026-08-21 | [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md) |
-| 3 | Node disk full | — | Abandoned before running; kind disables kubelet disk eviction, so the drill cannot produce the failure it is meant to produce. Reasoning in [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md#why-this-drill-replaced-the-disk-full-drill) | — |
+| 3 | Repairing drift the orchestrator did not cause | 2026-08-26 | 3 findings — resubmitting the intent to repair a Deployment scaled outside Helm fails on a server-side apply conflict, and the failed upgrade makes a running workload read `FAILED` | [drill-3](postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) |
+| — | Node disk full | — | Abandoned before running; kind disables kubelet disk eviction, so the drill cannot produce the failure it is meant to produce. Reasoning in [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md#why-this-drill-replaced-the-disk-full-drill) | — |
 
 ## Runbooks
 
@@ -50,10 +56,14 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-Both drills so far turned up Sev-1 behaviour, which is the point of running them. The fixes are
+All three drills turned up Sev-1 behaviour, which is the point of running them. The fixes are
 recorded in [ADR-0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md) and
-verified against the cluster on 2026-08-21; each drill's action-item table says which findings are
-closed and which are still open.
+[ADR-0007](../design/adr/0007-stability-is-an-alerting-concern.md) and verified against the cluster;
+each drill's action-item table says which findings are closed and which are still open.
+
+Alerting rules built from these drills live in
+[`monitoring/nf-lifecycle.rules.yml`](../../monitoring/nf-lifecycle.rules.yml). Every one carries a
+`for:` window, which is where "stable" is defined — see ADR-0007.
 
 ## Conventions
 
