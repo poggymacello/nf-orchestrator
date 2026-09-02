@@ -6,7 +6,7 @@ from prometheus_client.core import GaugeMetricFamily
 
 from orchestrator import reconciler
 from orchestrator.deploy import DeployError, list_releases
-from orchestrator.reconciler import State
+from orchestrator.reconciler import OperationState, State
 
 REGISTRY = CollectorRegistry()
 
@@ -90,6 +90,11 @@ class LifecycleCollector:
             "Pods of the release whose containers all report ready",
             labels=["release"],
         )
+        operation = GaugeMetricFamily(
+            "nf_last_operation_state",
+            "1 for the state of the release's last lifecycle operation, 0 for the others",
+            labels=["release", "state"],
+        )
 
         try:
             names = release_names()
@@ -113,11 +118,17 @@ class LifecycleCollector:
                 )
             desired.add_metric([name], float(current.get("desired_replicas", 0)))
             ready.add_metric([name], float(current.get("ready_replicas", 0)))
+            last = current.get("last_operation", {}).get("state")
+            for member in OperationState:
+                operation.add_metric(
+                    [name, member.value], 1.0 if last == member.value else 0.0
+                )
 
         yield reachable
         yield state
         yield desired
         yield ready
+        yield operation
 
 
 REGISTRY.register(LifecycleCollector())
