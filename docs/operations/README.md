@@ -37,7 +37,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 |---|---|---|---|---|
 | 1 | Pods killed mid-deploy | 2026-08-20 | 4 findings — the reconciler reported `INSTANTIATED` without ever checking how many replicas the intent asked for. 1-3 fixed 2026-08-21 | [drill-1](postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) |
 | 2 | Control plane unreachable | 2026-08-20 | 4 findings — a running NF was reported as `NOT_INSTANTIATED` with HTTP 200 while the cluster was unreachable. 1-3 fixed 2026-08-21 | [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md) |
-| 3 | Repairing drift the orchestrator did not cause | 2026-08-26 | 3 findings — resubmitting the intent to repair a Deployment scaled outside Helm fails on a server-side apply conflict, and the failed upgrade makes a running workload read `FAILED` | [drill-3](postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) |
+| 3 | Repairing drift the orchestrator did not cause | 2026-08-26 | 3 findings — resubmitting the intent to repair a Deployment scaled outside Helm fails on a server-side apply conflict, and the failed upgrade makes a running workload read `FAILED`. Findings 1 and 3 fixed 2026-08-27 | [drill-3](postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) |
 | — | Node disk full | — | Abandoned before running; kind disables kubelet disk eviction, so the drill cannot produce the failure it is meant to produce. Reasoning in [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md#why-this-drill-replaced-the-disk-full-drill) | — |
 
 ## Runbooks

@@ -11,9 +11,19 @@ app = FastAPI(title="nf-orchestrator")
 
 
 def http_error(exc: deploy_engine.DeployError) -> HTTPException:
-    """502 when the cluster answered and refused, 503 when it could not be reached."""
-    unreachable = isinstance(exc, deploy_engine.ClusterUnreachable)
-    return HTTPException(status_code=503 if unreachable else 502, detail=str(exc))
+    """503 unreachable, 409 a field-ownership conflict, 502 any other refusal."""
+    if isinstance(exc, deploy_engine.ClusterUnreachable):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, deploy_engine.ClusterConflict):
+        return HTTPException(
+            status_code=409,
+            detail=(
+                f"{exc} -- another field manager owns a field this intent would "
+                "change. Resubmitting will not help. To take ownership, POST the "
+                "same intent to /deployments/{name}/repair."
+            ),
+        )
+    return HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/healthz")
@@ -56,6 +66,28 @@ def create_deployment(intent: Intent) -> dict[str, Any]:
         raise http_error(exc) from exc
     metrics.record_deploy("success", intent.environment)
     return result
+
+
+@app.post("/deployments/{name}/repair", status_code=200)
+def repair_deployment(name: str, intent: Intent) -> dict[str, Any]:
+    """Apply an intent, taking ownership of fields another manager holds.
+
+    Separate from POST /deployments because forcing overrides whatever else was
+    writing to those fields. The caller states the intent it wants in effect rather
+    than the orchestrator guessing which of several recorded intents to restore.
+    """
+    if intent.name != name:
+        raise HTTPException(
+            status_code=400,
+            detail=f"intent name {intent.name!r} does not match path {name!r}",
+        )
+    try:
+        result = deploy_engine.deploy(intent, force_conflicts=True)
+    except deploy_engine.DeployError as exc:
+        metrics.record_repair("failed", intent.environment)
+        raise http_error(exc) from exc
+    metrics.record_repair("success", intent.environment)
+    return {**result, "forced": True}
 
 
 @app.get("/deployments/{name}")

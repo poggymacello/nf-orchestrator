@@ -20,6 +20,13 @@ UNREACHABLE_MARKERS = (
     "i/o timeout",
 )
 
+# Server-side apply refusing to take a field from another manager. The wording comes
+# from the M4 drill-3 conflict, where `kubectl scale` owned `.spec.replicas`.
+CONFLICT_MARKERS = (
+    "conflict occurred while applying",
+    "apply failed with",
+)
+
 
 class DeployError(RuntimeError):
     pass
@@ -33,10 +40,22 @@ class ClusterUnreachable(DeployError):
     """
 
 
+class ClusterConflict(DeployError):
+    """Another field manager owns a field this apply would change.
+
+    Helm 4 applies server-side, so a field written by something else — `kubectl
+    scale`, an autoscaler — is refused rather than silently overwritten. Resolving it
+    means deciding who should own the field, which is a caller's decision and not
+    one the deploy path makes on its own. See ADR-0008.
+    """
+
+
 def classify_error(message: str) -> DeployError:
     lowered = message.lower()
     if any(marker in lowered for marker in UNREACHABLE_MARKERS):
         return ClusterUnreachable(message)
+    if any(marker in lowered for marker in CONFLICT_MARKERS):
+        return ClusterConflict(message)
     return DeployError(message)
 
 
@@ -88,23 +107,30 @@ def list_releases() -> list[str]:
     return [release["name"] for release in json.loads(output)]
 
 
-def deploy(intent: Intent) -> dict[str, Any]:
+def deploy(intent: Intent, force_conflicts: bool = False) -> dict[str, Any]:
+    """Apply an intent. force_conflicts takes ownership of fields another manager holds.
+
+    The default is False and the deploy path never sets it. Forcing is an explicit,
+    separately named operation, because it overrides whatever else was writing to
+    those fields — see ADR-0008.
+    """
     values = render_values(intent)
     name = release_name(intent)
-    output = run_helm(
-        [
-            "upgrade",
-            "--install",
-            name,
-            str(CHART_PATH),
-            "--kube-context",
-            KUBE_CONTEXT,
-            "--set-json",
-            json.dumps(values),
-            "--output",
-            "json",
-        ]
-    )
+    args = [
+        "upgrade",
+        "--install",
+        name,
+        str(CHART_PATH),
+        "--kube-context",
+        KUBE_CONTEXT,
+        "--set-json",
+        json.dumps(values),
+        "--output",
+        "json",
+    ]
+    if force_conflicts:
+        args.append("--force-conflicts")
+    output = run_helm(args)
     info = json.loads(output)["info"]
     return {
         "release": name,

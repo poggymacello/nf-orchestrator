@@ -22,8 +22,20 @@ deployments_total = Counter(
 UNAVAILABLE = (DeployError, OSError)
 
 
+repairs_total = Counter(
+    "deployment_repairs_total",
+    "Repairs that forced ownership of a contested field, by outcome",
+    ["result", "environment"],
+    registry=REGISTRY,
+)
+
+
 def record_deploy(result: str, environment: str) -> None:
     deployments_total.labels(result=result, environment=environment).inc()
+
+
+def record_repair(result: str, environment: str) -> None:
+    repairs_total.labels(result=result, environment=environment).inc()
 
 
 def release_names() -> list[str]:
