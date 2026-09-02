@@ -32,8 +32,17 @@ comes out.
 
 ## Where this stands today
 
-M0 is complete: a FastAPI skeleton with a `/healthz` endpoint, `kind` cluster config, lint and test
-in CI. None of the intent → deploy → lifecycle → metrics pipeline described above is wired yet —
-each stage has been exercised manually (see `docs/learning-notes/` and `docs/daily-log/`) but not
-built into the running application. See [`milestone-map.md`](../milestone-map.md) for what maps to
-which code milestone.
+The whole intent → deploy → lifecycle → metrics path is wired and running (M0 through M4). An intent
+is validated, deployed with Helm to `kind`, and its lifecycle state derived from live cluster
+signals on every read, with Prometheus gauges and alerting rules over the top.
+
+Three deliberate failure drills have been run against a real cluster, with postmortems, runbooks,
+and fixes verified by re-running the drill — see [`../operations/`](../operations/README.md). Every
+one of them found the orchestrator reporting something false, and the fixes are recorded as
+ADR-0006 through ADR-0009.
+
+M5 is in progress: the end-to-end lifecycle now runs in CI against a real kind cluster on every
+push. Gitleaks, Trivy and the banned-terms grep are still `(planned)`, so the leak-scrub in
+`CONTRIBUTING.md` remains a manual step. The LLM intent layer is M6 and does not exist.
+
+See [`milestone-map.md`](../milestone-map.md) for what maps to which code milestone.
