@@ -1,7 +1,15 @@
 # ADR-0005: Derive lifecycle state from live cluster signals, don't store it
 
-- **Status:** Accepted
+- **Status:** Accepted, superseded in part by
+  [ADR-0006](0006-instantiated-means-the-intent-is-satisfied.md) (2026-08-21)
 - **Date:** 2026-07-23
+
+> **Superseded in part.** The M4 failure drills broke the derivation table and both signal readers
+> described below. ADR-0006 replaces them: `INSTANTIATED` now requires the desired replica count to
+> be met with every pod ready, and an unreachable cluster raises rather than reading as
+> `NOT_INSTANTIATED`. The decisions to derive on read, keep the projection a pure function, poll
+> rather than watch, and make teardown idempotent all still stand. The table and the verification
+> below are kept as the M3 record.
 
 ## Context
 

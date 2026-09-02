@@ -35,5 +35,5 @@ comes out.
 M0 is complete: a FastAPI skeleton with a `/healthz` endpoint, `kind` cluster config, lint and test
 in CI. None of the intent → deploy → lifecycle → metrics pipeline described above is wired yet —
 each stage has been exercised manually (see `docs/learning-notes/` and `docs/daily-log/`) but not
-built into the running application. See [`milestone-map.md`](milestone-map.md) for what maps to
+built into the running application. See [`milestone-map.md`](../milestone-map.md) for what maps to
 which code milestone.
