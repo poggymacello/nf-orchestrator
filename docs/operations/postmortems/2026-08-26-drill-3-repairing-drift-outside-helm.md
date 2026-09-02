@@ -1,6 +1,6 @@
 # Postmortem — Drill 3: repairing drift the orchestrator did not cause
 
-**Date:** 2026-08-26 · **Severity:** Sev-1 · **Status:** finding 1 open, findings 2-3 documented ·
+**Date:** 2026-08-26 · **Severity:** Sev-1 · **Status:** findings 1 and 3 fixed, finding 2 open ·
 **Found:** accidentally, then reproduced deliberately
 
 **Summary:** An operator scales a Deployment outside Helm. The orchestrator correctly reports the
@@ -140,8 +140,8 @@ be genuinely executed and still be documented for the wrong situation.
 
 | # | Finding | Action | Status |
 |---|---|---|---|
-| 1 | Drift is visible but unrepairable through the API | Decide in an ADR whether the deploy engine should pass `--force-conflicts`, always or on an explicit repair path. Do not patch it silently | open |
-| 2 | A failed Helm operation is reported as a failed deployment | Consider separating operation state from instantiation state, as ETSI SOL003 does, rather than mapping `helm_status == "failed"` to `FAILED` | open |
+| 1 | Drift is visible but unrepairable through the API | Decide in an ADR whether the deploy engine should pass `--force-conflicts`, always or on an explicit repair path. Do not patch it silently | **fixed 2026-08-27** — the deploy path never forces; conflicts return `409` and `POST /deployments/{name}/repair` forces explicitly ([ADR-0008](../../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md)) |
+| 2 | A failed Helm operation is reported as a failed deployment | Consider separating operation state from instantiation state, as ETSI SOL003 does, rather than mapping `helm_status == "failed"` to `FAILED` | open — a successful repair clears it, but the mapping itself is unchanged |
 | 3 | Runbook step 6 told operators to do the thing that breaks | Corrected, with the tested `--force-conflicts` command and a warning about the poisoned state | **fixed 2026-08-26** |
 
 ## Reproduce
@@ -160,3 +160,24 @@ curl -s -X POST localhost:8000/deployments -H 'Content-Type: application/json' -
 
 The third command returns `502` with the conflict, and `GET /deployments/stable-nf` then reads
 `FAILED`. Recover with `helm upgrade ... --force-conflicts`.
+
+## Follow-up, 2026-08-27
+
+Finding 1 is fixed, and fixing it surfaced a second bug with the same root.
+
+`desired_replicas` was reading `helm get values <name>`, which returns the **latest** revision's
+values — including an upgrade that failed and never applied. So after the conflict above, the
+orchestrator reported a desired count taken from an intent the cluster had rejected. With the two
+revisions carrying different values it is unmistakable:
+
+```
+$ helm get values repair-nf --kube-context kind-nf-orchestrator -o json
+{"environment":"staging","replicaCount":5}       <- failed revision 2, never applied
+
+$ curl -s localhost:8000/deployments/repair-nf   # before the fix
+{"state":"FAILED","desired_replicas":5,"ready_replicas":1,...}
+```
+
+`desired_replicas` now reads the last revision whose status is `deployed`, and reports 2 — what is
+actually running. This drill's finding 1 and this bug are the same confusion in two places: what was
+submitted is not what is in effect.

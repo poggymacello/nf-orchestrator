@@ -9,9 +9,9 @@ actually built, not what is planned.
 | **M1** | Intent JSON Schema + validation endpoint | build-log/m1, ADR-0003 (schema contract), learning-notes/json-schema | code: done · docs: done |
 | **M2** | Deploy engine — intent deploys stand-in NF via Helm to kind | build-log/m2, ADR-0004 (Helm), learning-notes/helm-and-kind | code: done · docs: done |
 | **M3** | Status reconciler + lifecycle states + teardown | build-log/m3, design/lifecycle-states, ADR-0005 | code: done · docs: done |
-| **M4** | Observability + 3 failure drills + postmortems + runbooks | learning-notes/prometheus-instrumentation, operations/runbooks, operations/postmortems, ADR-0006, ADR-0007 | code: `/metrics`, lifecycle gauges, reconciler fixes, `/readyz` done · 3 drills run, postmortems and runbooks written, alert rules verified · docs: done |
+| **M4** | Observability + 3 failure drills + postmortems + runbooks | learning-notes/prometheus-instrumentation, operations/runbooks, operations/postmortems, ADR-0006, ADR-0007, ADR-0008 | code: `/metrics`, lifecycle gauges, reconciler fixes, `/readyz`, repair route done · 3 drills run, postmortems and runbooks written, alert rules verified · docs: done |
 | **M5** | CI hardening — Gitleaks, Trivy, e2e with kind | docs on CI security gates | planned |
-| **M6** | LLM intent layer (text → validated JSON) with guardrails | ADR-0008 (LLM guardrail) | planned |
+| **M6** | LLM intent layer (text → validated JSON) with guardrails | ADR on the LLM guardrail, numbered when written | planned |
 | **M7** | README polish, architecture + lifecycle diagrams, quickstart | design/overview, design/architecture, publish pass | planned |
 
 ## Rule

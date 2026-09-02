@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-08-27 | 14 | Decide whether the deploy engine forces apply conflicts, and find that the desired replica count had been read from a rejected intent | [2026-08-27](2026-08-27.md) |
 | 2026-08-26 | 13 | Answer what a stable lifecycle state means, prove it with real alert rules, and find a bug that made the day-12 runbook wrong | [2026-08-26](2026-08-26.md) |
 | 2026-08-21 | 12 | Fix what the drills found, in code with tests, and re-run both drills against the fixed build | [2026-08-21](2026-08-21.md) |
 | 2026-08-20 | 11 | Run failure drills 1 and 2 against the real cluster and write the postmortems and runbooks from what they turned up | [2026-08-20](2026-08-20.md) |
