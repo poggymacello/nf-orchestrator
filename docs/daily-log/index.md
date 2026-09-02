@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-08-20 | 11 | Run failure drills 1 and 2 against the real cluster and write the postmortems and runbooks from what they turned up | [2026-08-20](2026-08-20.md) |
 | 2026-07-24 | 10 | Instrument one real metric, scrape it with Prometheus during real deploys, and see it in Grafana | [2026-07-24](2026-07-24.md) |
 | 2026-07-23 | 9 | Build the M3 reconciler and watch the real lifecycle-state sequence it derives from cluster signals | [2026-07-23](2026-07-23.md) |
 | 2026-07-22 | 8 | Build the M2 deploy engine and prove a validated intent reaches a Running pod on kind | [2026-07-22](2026-07-22.md) |
