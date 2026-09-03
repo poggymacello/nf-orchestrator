@@ -45,11 +45,30 @@ CI is two jobs, and triggers on every branch push as well as on pull requests.
   taking the field back, a bad image tag reaching `FAILED`, and idempotent teardown. Run it
   locally with `make up && make e2e`.
 
-Third-party actions are pinned to a commit rather than a tag, because a tag can be moved onto
-different code.
+- **`secret-scan`** (M5) runs Gitleaks over the full history with `--exit-code 1`. History, not
+  the diff: a key committed in July and deleted in August is still in the pack file.
+- **`banned-terms`** (M5) greps the tracked files for private terms. The list is **not** in this
+  repository — it arrives as the `BANNED_TERMS` repository secret — and a match is reported as a
+  location and a list index, never as the term, because a public CI log is exactly where a private
+  term must not appear. The gate fails closed: unset means fail, not pass. Design and the reasoning
+  in [ADR-0010](docs/design/adr/0010-leak-gates-must-not-leak.md).
 
-Everything below is `(planned, M5)` and is not running yet, so the leak-scrub above is still a
-manual step before every commit.
+Third-party actions are pinned to a commit rather than a tag, and the Gitleaks image to a digest,
+because a tag can be moved onto different code.
+
+Two items of the leak-scrub checklist above are now mechanical — credentials, and any term on the
+private list. The rest of it is still a manual step before every commit: no real IPs, no personal
+names, the O-RAN citation rule, and the self-directed framing.
+
+### Running the term scan yourself
+
+```bash
+gh secret set BANNED_TERMS < your-term-list.txt   # once, for CI
+BANNED_TERMS="$(cat your-term-list.txt)" make scan
+```
+
+One term per line; `#` starts a comment. Trivy for dependency and chart scanning is
+`(planned, M5)`.
 
 - **Gitleaks** to scan for accidental secrets. `(planned, M5)`
 - A **banned-terms grep** to fail the build on any private term, with the list kept outside this
