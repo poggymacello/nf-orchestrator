@@ -60,13 +60,17 @@ def test_cli_fails_closed_when_not_configured() -> None:
     assert "fails closed" in result.stderr
 
 
-def test_cli_is_clean_against_a_term_this_repo_does_not_contain(
-    monkeypatch: object,
-) -> None:
+def test_cli_is_clean_against_a_term_this_repo_does_not_contain() -> None:
+    """The term is generated, not written down.
+
+    A literal here would be a term that this file makes present by naming it — which
+    is exactly how the first version of this test failed once it was committed.
+    """
     import os
+    import uuid
 
     env = dict(os.environ)
-    env["BANNED_TERMS"] = "a-term-that-appears-nowhere-in-this-repository"
+    env["BANNED_TERMS"] = f"absent-{uuid.uuid4().hex}"
     result = run_cli(env)
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
