@@ -32,6 +32,34 @@ jobs:
       # The e2e tests skip themselves without NF_E2E, so this stays a no-cluster run.
       - run: pytest
 
+  # Secret scanning over the whole history, not just the diff: a secret committed
+  # three months ago and deleted since is still in the pack file.
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo"             zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f             detect --source=/repo --no-banner --redact --exit-code 1
+
+  # The private-term list is not in this repository, by design. It arrives as a
+  # secret; the scanner never prints a term, not even inside a path. See ADR-0010.
+  banned-terms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Scan tracked files for private terms
+        env:
+          BANNED_TERMS: ${{ secrets.BANNED_TERMS }}
+        run: python scripts/scan_banned_terms.py
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20

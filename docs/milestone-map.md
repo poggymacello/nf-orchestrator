@@ -10,7 +10,7 @@ actually built, not what is planned.
 | **M2** | Deploy engine — intent deploys stand-in NF via Helm to kind | build-log/m2, ADR-0004 (Helm), learning-notes/helm-and-kind | code: done · docs: done |
 | **M3** | Status reconciler + lifecycle states + teardown | build-log/m3, design/lifecycle-states, ADR-0005 | code: done · docs: done |
 | **M4** | Observability + 3 failure drills + postmortems + runbooks | learning-notes/prometheus-instrumentation, operations/runbooks, operations/postmortems, ADR-0006 to ADR-0009 | code: `/metrics`, lifecycle and operation gauges, reconciler fixes, `/readyz`, repair route done · 3 drills run, every defect they found is fixed, alert rules verified · **done** (one open item: the eviction threshold the abandoned disk drill would need) |
-| **M5** | CI hardening — Gitleaks, Trivy, e2e with kind | build-log/m5 (when done), docs on CI security gates | e2e with kind: **done**, running on every branch push with Helm 4 pinned and actions pinned to SHAs · Gitleaks, Trivy, banned-terms grep: planned |
+| **M5** | CI hardening — Gitleaks, Trivy, e2e with kind | build-log/m5 (when done), ADR-0010 | e2e with kind: **done** · Gitleaks and the banned-terms grep: **done**, ADR-0010 (banned-terms needs the `BANNED_TERMS` secret set, and fails closed until it is) · Trivy: planned |
 | **M6** | LLM intent layer (text → validated JSON) with guardrails | ADR on the LLM guardrail, numbered when written | planned |
 | **M7** | README polish, architecture + lifecycle diagrams, quickstart | design/overview, design/architecture, publish pass | README, architecture and overview brought up to date early (2026-09-02), because the front-door docs still described the M0 skeleton · remaining publish pass: planned |
 
