@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Fail the build if a private term appears anywhere in the tracked files.
 
 CONTRIBUTING has promised this since M1. The point is the leak-scrub checklist that
