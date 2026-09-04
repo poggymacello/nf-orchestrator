@@ -1,7 +1,21 @@
 replicaCount: 1
 environment: dev
 
+# nginx-unprivileged rather than nginx: it runs as UID 101 and listens on 8080, so the
+# pod needs neither root nor the privileged-port range. See ADR-0011.
 image:
-  repository: nginx
+  repository: nginxinc/nginx-unprivileged
   tag: "1.27"
   pullPolicy: IfNotPresent
+
+containerPort: 8080
+
+# Small, but present. An unbounded workload is a noisy-neighbour risk and Trivy is
+# right to flag it, even for a stand-in.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
