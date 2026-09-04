@@ -60,9 +60,46 @@ jobs:
           BANNED_TERMS: ${{ secrets.BANNED_TERMS }}
         run: python scripts/scan_banned_terms.py
 
+  # Two different questions, one tool. `config` reads the chart for insecure
+  # defaults; `fs` reads the resolved dependency set for known CVEs. Both fail the
+  # build only on HIGH and CRITICAL — the accepted MEDIUM and LOW findings are listed
+  # in ADR-0011 and still printed here.
+  vuln-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Chart misconfiguration
+        run: |
+          docker run --rm -v "$PWD:/repo" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969             config /repo/charts --exit-code 1 --severity HIGH,CRITICAL
+
+      # Trivy needs a dependency file to read. pyproject.toml alone leaves it with
+      # nothing to scan, and a scanner with no target reports clean forever.
+      - name: Freeze the dependency set CI actually installs
+        run: |
+          pip install -e ".[dev]"
+          mkdir -p .trivy-deps
+          pip freeze > .trivy-deps/requirements.txt
+          wc -l .trivy-deps/requirements.txt
+
+      - name: Dependency vulnerabilities
+        run: |
+          docker run --rm -v "$PWD/.trivy-deps:/deps" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969             fs /deps --scanners vuln --exit-code 1 --severity HIGH,CRITICAL
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Day 16 ran whatever kind-action defaulted to, and passing on a version I had not
+    # chosen was luck. Two pinned versions, so cross-version support is asserted rather
+    # than hoped for.
+    strategy:
+      fail-fast: false
+      matrix:
+        k8s: ["v1.34.0", "v1.35.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -86,6 +123,7 @@ jobs:
         with:
           cluster_name: nf-orchestrator
           config: kind-config.yaml
+          node_image: kindest/node:${{ matrix.k8s }}
 
       - name: Record the versions this run actually used
         run: |

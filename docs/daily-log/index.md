@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-04 | 18 | Finish M5 with Trivy, harden the stand-in NF against its own findings, and pin the Kubernetes matrix | [2026-09-04](2026-09-04.md) |
 | 2026-09-03 | 17 | Build the Gitleaks and banned-terms CI gates, and find that both of them lied on the first attempt | [2026-09-03](2026-09-03.md) |
 | 2026-09-02 | 16 | Get kind into CI so the M4 failure drills run on every push instead of only on this laptop | [2026-09-02](2026-09-02.md) |
 | 2026-09-01 | 15 | Split the network function's state from the last operation's, closing the final M4 drill finding | [2026-09-01](2026-09-01.md) |
