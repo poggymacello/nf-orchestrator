@@ -53,7 +53,13 @@ CI is two jobs, and triggers on every branch push as well as on pull requests.
   term must not appear. The gate fails closed: unset means fail, not pass. Design and the reasoning
   in [ADR-0010](docs/design/adr/0010-leak-gates-must-not-leak.md).
 
-Third-party actions are pinned to a commit rather than a tag, and the Gitleaks image to a digest,
+- **`vuln-scan`** (M5) runs Trivy twice: `config` over the chart for insecure defaults, and `fs`
+  over the dependency set CI actually installed for known CVEs. Both fail on HIGH and CRITICAL and
+  print everything else; the accepted MEDIUM and LOW findings are listed with reasons in
+  [ADR-0011](docs/design/adr/0011-scan-thresholds-and-a-hardened-stand-in.md). Run it locally with
+  `make trivy`.
+
+Third-party actions are pinned to a commit rather than a tag, and scanner images to a digest,
 because a tag can be moved onto different code.
 
 Two items of the leak-scrub checklist above are now mechanical — credentials, and any term on the
@@ -67,12 +73,7 @@ gh secret set BANNED_TERMS < your-term-list.txt   # once, for CI
 BANNED_TERMS="$(cat your-term-list.txt)" make scan
 ```
 
-One term per line; `#` starts a comment. Trivy for dependency and chart scanning is
-`(planned, M5)`.
-
-- **Gitleaks** to scan for accidental secrets. `(planned, M5)`
-- A **banned-terms grep** to fail the build on any private term, with the list kept outside this
-  repository and supplied to CI as a secret so the list itself never leaks. `(planned, M5)`
+One term per line; `#` starts a comment.
 
 ## Architecture decisions
 
