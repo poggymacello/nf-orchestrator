@@ -11,7 +11,7 @@ actually built, not what is planned.
 | **M3** | Status reconciler + lifecycle states + teardown | build-log/m3, design/lifecycle-states, ADR-0005 | code: done · docs: done |
 | **M4** | Observability + 3 failure drills + postmortems + runbooks | learning-notes/prometheus-instrumentation, operations/runbooks, operations/postmortems, ADR-0006 to ADR-0009 | code: `/metrics`, lifecycle and operation gauges, reconciler fixes, `/readyz`, repair route done · 3 drills run, every defect they found is fixed, alert rules verified · **done** (one open item: the eviction threshold the abandoned disk drill would need) |
 | **M5** | CI hardening — Gitleaks, Trivy, e2e with kind | build-log/m5, ADR-0010, ADR-0011 | **done** — five CI jobs on every branch push: lint-test, secret-scan, banned-terms, vuln-scan, e2e on a pinned Kubernetes matrix. The stand-in NF chart is hardened to 0 HIGH findings. `banned-terms` fails closed until the `BANNED_TERMS` secret is set |
-| **M6** | LLM intent layer (text → validated JSON) with guardrails | ADR on the LLM guardrail, numbered when written | planned |
+| **M6** | LLM intent layer (text → validated JSON) with guardrails | ADR-0012 | boundary and guardrails: **done** — `POST /intents/translate` returns a candidate that goes through the same schema, and translating never deploys · model-backed translator: in progress |
 | **M7** | README polish, architecture + lifecycle diagrams, quickstart | design/overview, design/architecture, publish pass | README, architecture and overview brought up to date early (2026-09-02), because the front-door docs still described the M0 skeleton · remaining publish pass: planned |
 
 ## Rule
