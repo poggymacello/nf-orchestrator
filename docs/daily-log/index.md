@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-09 | 21 | The M7 publish pass: read the docs as a stranger, fix every claim that stopped being true | [2026-09-09-3](2026-09-09-3.md) |
 | 2026-09-09 | 20 | Attack the translation boundary, find the injections held by accident, then plug the real model in | [2026-09-09-2](2026-09-09-2.md) |
 | 2026-09-09 | 19 | Build the boundary the LLM sits behind before building anything that calls a model | [2026-09-09](2026-09-09.md) |
 | 2026-09-04 | 18 | Finish M5 with Trivy, harden the stand-in NF against its own findings, and pin the Kubernetes matrix | [2026-09-04](2026-09-04.md) |
