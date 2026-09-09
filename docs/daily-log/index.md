@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-09 | 19 | Build the boundary the LLM sits behind before building anything that calls a model | [2026-09-09](2026-09-09.md) |
 | 2026-09-04 | 18 | Finish M5 with Trivy, harden the stand-in NF against its own findings, and pin the Kubernetes matrix | [2026-09-04](2026-09-04.md) |
 | 2026-09-03 | 17 | Build the Gitleaks and banned-terms CI gates, and find that both of them lied on the first attempt | [2026-09-03](2026-09-03.md) |
 | 2026-09-02 | 16 | Get kind into CI so the M4 failure drills run on every push instead of only on this laptop | [2026-09-02](2026-09-02.md) |
