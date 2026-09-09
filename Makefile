@@ -32,4 +32,7 @@ down:
 	kind delete cluster --name nf-orchestrator
 
 demo: up
-	@echo "Demo target — wired up in M2 once the deploy engine exists"
+	@echo "Cluster is up. The API server runs in the foreground, so use two shells:"
+	@echo "  1) uvicorn orchestrator:app --port 8000"
+	@echo "  2) curl -s -X POST localhost:8000/deployments -H 'content-type: application/json' \\"
+	@echo "          -d '{\"name\":\"sample-nf\",\"replicas\":2,\"environment\":\"dev\"}'"
