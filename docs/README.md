@@ -23,9 +23,11 @@ with deliberate failure drills, blameless postmortems, and security gates (Gitle
 
 ## Status
 
-Early. Documents are written to track code milestones one at a time. Anything not yet built is
-marked `(planned)`. See [`milestone-map.md`](milestone-map.md) for the mapping between code
-milestones and the documents they produce.
+M0 through M5 are done and M6 has its boundary; M7 is the publish pass this section is part of.
+Documents are written after the code milestone they describe is real, and anything not yet built is
+marked `(planned)` rather than described as if it exists. See
+[`milestone-map.md`](milestone-map.md) for the mapping between code milestones and the documents
+they produce, including the two things that are deliberately still missing.
 
 ## License
 
