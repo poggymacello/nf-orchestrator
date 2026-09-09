@@ -70,24 +70,40 @@ class RuleTranslator:
     def propose(self, text: str) -> dict[str, Any]:
         lowered = text.lower()
 
-        environment = next((e for e in ENVIRONMENTS if e in lowered), None)
-        if environment is None:
+        # Every mention, not the first one found. Picking the first match walked the
+        # ENVIRONMENTS tuple rather than the sentence, so "from staging to prod" chose
+        # staging and "to prod, not dev" chose dev. Drill 4 found that; refusing an
+        # ambiguous text is the fix, because a text naming two environments has not
+        # said which one it wants.
+        mentioned = [e for e in ENVIRONMENTS if re.search(rf"\b{e}\b", lowered)]
+        if not mentioned:
             raise TranslationError(
                 "no environment found in the text; expected one of "
                 + ", ".join(ENVIRONMENTS)
             )
+        if len(mentioned) > 1:
+            raise TranslationError(
+                "text mentions more than one environment ("
+                + ", ".join(mentioned)
+                + "); say which one, it will not be guessed"
+            )
+        environment = mentioned[0]
 
-        replicas: int | None = None
-        digits = COUNT.search(lowered)
-        if digits:
-            replicas = int(digits.group("count"))
-        else:
-            for word, value in NUMBER_WORDS.items():
-                if re.search(rf"\b{word}\b", lowered):
-                    replicas = value
-                    break
-        if replicas is None:
+        counts = {int(c) for c in COUNT.findall(lowered)}
+        counts |= {
+            value
+            for word, value in NUMBER_WORDS.items()
+            if re.search(rf"\b{word}\b", lowered)
+        }
+        if not counts:
             raise TranslationError("no replica count found in the text")
+        if len(counts) > 1:
+            raise TranslationError(
+                "text mentions more than one replica count ("
+                + ", ".join(str(c) for c in sorted(counts))
+                + "); say which one, it will not be guessed"
+            )
+        replicas = counts.pop()
 
         hint = NAME_HINT.search(text)
         if hint:
