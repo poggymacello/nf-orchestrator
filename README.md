@@ -79,6 +79,7 @@ $ curl -s -X DELETE localhost:8000/deployments/sample-nf
 | Route | Does |
 |---|---|
 | `POST /intents/validate` | Validate an intent without deploying it |
+| `POST /intents/translate` | Free text to a *candidate* intent. Translating never deploys — the candidate goes through the same schema, and putting it in a cluster is a separate call |
 | `GET /intents/schema` | The JSON Schema the intent must satisfy |
 | `POST /deployments` | Deploy a validated intent. `409` if another field manager owns a field it would change — it never forces |
 | `GET /deployments/{name}` | Derived lifecycle state, the replica counts behind it, and the last operation. `503` if the cluster is unreachable, never a lifecycle state |

@@ -38,6 +38,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | 1 | Pods killed mid-deploy | 2026-08-20 | 4 findings — the reconciler reported `INSTANTIATED` without ever checking how many replicas the intent asked for. 1-3 fixed 2026-08-21, 4 answered 2026-08-26 | [drill-1](postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) |
 | 2 | Control plane unreachable | 2026-08-20 | 4 findings — a running NF was reported as `NOT_INSTANTIATED` with HTTP 200 while the cluster was unreachable. 1-3 fixed 2026-08-21; 4 is the disk-drill prerequisite, still open | [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md) |
 | 3 | Repairing drift the orchestrator did not cause | 2026-08-26 | 3 findings — resubmitting the intent to repair a Deployment scaled outside Helm fails on a server-side apply conflict, and the failed upgrade makes a running workload read `FAILED`. All findings fixed by 2026-09-01 | [drill-3](postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) |
+| 4 | Steering the translator with its own input | 2026-09-09 | 3 findings — every injection was refused, but by the order of a tuple in the source rather than by design; the same accident made ordinary text silently wrong ("from staging to prod" → staging). 1 and 2 fixed, 3 accepted as a limit of validation | [drill-4](postmortems/2026-09-09-drill-4-steering-the-translator-with-text.md) |
 | — | Node disk full | — | Abandoned before running; kind disables kubelet disk eviction, so the drill cannot produce the failure it is meant to produce. Reasoning in [drill-2](postmortems/2026-08-20-drill-2-control-plane-unreachable.md#why-this-drill-replaced-the-disk-full-drill) | — |
 
 ## Runbooks
@@ -56,20 +57,29 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-All three drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
+All four drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
 they found is now fixed, across ADRs [0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md),
 [0007](../design/adr/0007-stability-is-an-alerting-concern.md),
 [0008](../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md) and
-[0009](../design/adr/0009-the-operation-is-not-the-network-function.md), each verified against a
-running cluster. Each drill's action-item table says which change closed which finding. One item
-remains open and is not a defect: drill 2's action item 4, the eviction threshold a real disk drill
-would need before it has any failure to observe.
+[0009](../design/adr/0009-the-operation-is-not-the-network-function.md) for drills 1-3, and in the
+translator itself for drill 4. Each drill's action-item table says which change closed which
+finding.
+
+Two items stay open and neither is a defect: drill 2's action item 4, the eviction threshold a real
+disk drill would need before it has any failure to observe; and drill 4's finding 3, that a
+well-formed but wrong candidate passes every validation check — a limit of validation itself, which
+only the separation between translating and deploying addresses.
 
 The drills kept finding one mistake in different places: two things that are usually equal,
 collapsed into a single value, diverging only during an incident. Pod phase versus container
 readiness; release-absent versus cluster-unreachable; intent submitted versus intent applied;
 operation failed versus network function failed. Four instances across three drills, each invisible
 until the system was under stress, which is the argument for running drills at all.
+
+Drill 4 added a different lesson: three probes came back green and nearly became a claim that the
+translator resists injection. It did not — it had an arbitrary preference that happened to be safe
+that day, and the same arbitrariness was answering ordinary sentences wrongly. Ask why a gate held,
+not just whether it held.
 
 Alerting rules built from these drills live in
 [`monitoring/nf-lifecycle.rules.yml`](../../monitoring/nf-lifecycle.rules.yml). Every one carries a

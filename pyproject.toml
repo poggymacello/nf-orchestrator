@@ -9,6 +9,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The model-backed translator is opt-in. The core loop, the tests and CI all run
+# without it and without a key -- see ADR-0013.
+llm = [
+    "anthropic",
+]
 dev = [
     "pytest",
     "httpx",
