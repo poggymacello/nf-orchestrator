@@ -126,15 +126,23 @@ Recorded as ADRs with the alternatives that were rejected and why —
 
 ## Tests and CI
 
-74 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs both
-jobs on every branch push: `lint-test` with no cluster, and `e2e`, which creates a kind cluster and
-asserts the drills' ground — a deploy reaching `INSTANTIATED`, drift showing as a shortfall, a
-conflicting resubmit refused with `409`, repair taking the field back, a bad image tag reaching
-`FAILED`, idempotent teardown.
+122 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
+five jobs on every branch push: `lint-test` with no cluster; `secret-scan` (Gitleaks over the full
+history); `banned-terms` (private terms, from a secret, never printed); `vuln-scan` (Trivy over the
+chart and the dependency set); and `e2e`, which creates a kind cluster on each of two pinned
+Kubernetes versions and asserts the drills' ground — a deploy reaching `INSTANTIATED`, drift
+showing as a shortfall, a conflicting resubmit refused with `409`, repair taking the field back, a
+bad image tag reaching `FAILED`, idempotent teardown.
 
 Helm is pinned to 4.2.2 in CI, because the conflict behaviour those tests assert does not exist in
 Helm 3 — a job on Helm 3 would pass for the wrong reason. Third-party actions are pinned to commit
-SHAs.
+SHAs and scanner images to digests.
+
+> **The CI badge is red, on purpose.** `banned-terms` fails closed when its term list is not
+> configured, because a scan that is switched off and a scan that finds nothing produce identical
+> output. The list is deliberately not in this repository — it arrives as a secret — so the job
+> stays red until `gh secret set BANNED_TERMS` is run. The other four jobs pass. Reasoning in
+> [ADR-0010](docs/design/adr/0010-leak-gates-must-not-leak.md).
 
 ```bash
 make lint && make test      # no cluster needed
@@ -143,10 +151,14 @@ make up && make e2e         # the same command CI runs
 
 ## Not built
 
-- **Gitleaks, Trivy and a banned-terms grep in CI** — M5, in progress. The leak-scrub in
-  [`CONTRIBUTING.md`](CONTRIBUTING.md) is still a manual step.
-- **The LLM intent layer** (text → validated JSON with guardrails) — M6. It sits *in front of* the
-  schema boundary and the core loop never depends on it.
+- **A live run of the model-backed translator.** `POST /intents/translate` and its guardrails are
+  built and drilled, and a Claude-backed translator sits behind the same protocol — but it has never
+  made a real API call, because there was no key in the environment it was written in. Its logic is
+  tested against a fake client; its integration is not tested
+  ([ADR-0013](docs/design/adr/0013-the-claude-translator-is-opt-in-and-unverified.md)).
+- **A recorded rationale for choosing FastAPI.** The decision predates the ADR habit and was never
+  written down. It has not been reconstructed after the fact, for the reason
+  [ADR-0001](docs/design/adr/0001-record-architecture-decisions.md) gives.
 - **Any push or event stream.** State is derived per read; Prometheus scraping is a poll on a timer,
   so a transition between two scrapes is never seen.
 - **Multi-cluster, HA, persistence.** One intent, one cluster, no database.
@@ -157,7 +169,7 @@ Status per milestone: [`docs/milestone-map.md`](docs/milestone-map.md).
 
 | | |
 |---|---|
-| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 8 ADRs |
+| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 12 ADRs |
 | [Operations](docs/operations/README.md) | Failure drills, postmortems, runbooks, alerting |
 | [Build log](docs/build-log/) | Per-milestone: what was set out to do, what broke, what was learned |
 | [Daily log](docs/daily-log/) | A dated record of every working day on this project |

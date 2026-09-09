@@ -36,13 +36,21 @@ The whole intent → deploy → lifecycle → metrics path is wired and running 
 is validated, deployed with Helm to `kind`, and its lifecycle state derived from live cluster
 signals on every read, with Prometheus gauges and alerting rules over the top.
 
-Three deliberate failure drills have been run against a real cluster, with postmortems, runbooks,
-and fixes verified by re-running the drill — see [`../operations/`](../operations/README.md). Every
-one of them found the orchestrator reporting something false, and the fixes are recorded as
-ADR-0006 through ADR-0009.
+Four deliberate failure drills have been run, with postmortems, runbooks, and fixes verified by
+re-running the drill — see [`../operations/`](../operations/README.md). Every one found the
+orchestrator reporting something false: the first three against a real cluster, recorded as ADR-0006
+through ADR-0009, and the fourth against the translation boundary.
 
-M5 is in progress: the end-to-end lifecycle now runs in CI against a real kind cluster on every
-push. Gitleaks, Trivy and the banned-terms grep are still `(planned)`, so the leak-scrub in
-`CONTRIBUTING.md` remains a manual step. The LLM intent layer is M6 and does not exist.
+M5 is done: five CI jobs run on every branch push — lint and unit tests, Gitleaks over the full
+history, the private-term grep, Trivy over the chart and the dependencies, and the end-to-end
+lifecycle against a real kind cluster on two pinned Kubernetes versions. The stand-in NF chart is
+hardened to zero HIGH findings.
+
+M6 has its boundary: `POST /intents/translate` turns free text into a *candidate* intent that goes
+through the same schema as any other, and translating never deploys. A fourth failure drill was run
+against it. The model-backed translator exists behind the same protocol but has **never been run
+against a live API** — there was no key in the build environment, so its logic is unit tested
+against a fake client and its integration is not tested at all
+([ADR-0013](adr/0013-the-claude-translator-is-opt-in-and-unverified.md)).
 
 See [`milestone-map.md`](../milestone-map.md) for what maps to which code milestone.
