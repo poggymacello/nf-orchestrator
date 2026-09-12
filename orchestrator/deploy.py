@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -6,7 +7,10 @@ from typing import Any
 from orchestrator.intent import Intent
 
 CHART_PATH = Path(__file__).resolve().parent.parent / "charts" / "stand-in-nf"
-KUBE_CONTEXT = "kind-nf-orchestrator"
+# The cluster this orchestrator talks to. Overridable so a drill can be run against a
+# throwaway cluster without touching the one every other milestone has reused, and so
+# nothing has to edit a constant to point somewhere else.
+KUBE_CONTEXT = os.environ.get("NF_KUBE_CONTEXT", "kind-nf-orchestrator")
 
 # Substrings that mean "the cluster could not be reached", as opposed to "the cluster
 # answered and said no". Collected from real helm and kubectl failures during the M4

@@ -85,14 +85,24 @@ def derive_state(
     if helm_status is None:
         return State.NOT_INSTANTIATED
 
-    reasons = {pod.get("reason") for pod in pods}
-    if reasons & FAILED_POD_REASONS:
-        return State.FAILED
-    if any(pod.get("phase") in TERMINAL_POD_PHASES for pod in pods):
+    # A pod in a terminal phase is history, not current state. Kubernetes never
+    # deletes an evicted pod, so judging the NF on the whole list reported FAILED
+    # forever after an incident that was over — drill 5, finding 2.
+    live = [pod for pod in pods if pod.get("phase") not in TERMINAL_POD_PHASES]
+    terminal = [pod for pod in pods if pod.get("phase") in TERMINAL_POD_PHASES]
+
+    if {pod.get("reason") for pod in live} & FAILED_POD_REASONS:
         return State.FAILED
 
-    if desired > 0 and len(pods) == desired and all(pod.get("ready") for pod in pods):
+    # Judged on the live pods alone: corpses beside a satisfied intent do not make a
+    # network function unhealthy.
+    if desired > 0 and len(live) == desired and all(pod.get("ready") for pod in live):
         return State.INSTANTIATED
+
+    # A terminal pod with the intent *not* satisfied is the drill-1 case: the workload
+    # stopped and nothing replaced it.
+    if terminal:
+        return State.FAILED
 
     # A release that never deployed anything, whose attempt to do so failed, will not
     # progress on its own. Without this it would report INSTANTIATING indefinitely.
@@ -226,6 +236,12 @@ def pod_states(name: str) -> list[dict[str, Any]]:
             if waiting:
                 reason = waiting.get("reason")
                 break
+        # An evicted pod has no waiting container to carry a reason — the word that
+        # explains it, "Evicted", sits on the pod itself. Drill 5 reported twelve pods
+        # as {"phase": "Failed", "reason": null} while Kubernetes knew every one of
+        # them had been rejected for DiskPressure.
+        if reason is None:
+            reason = item["status"].get("reason")
         states.append(
             {
                 "phase": item["status"].get("phase"),
