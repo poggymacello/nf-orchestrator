@@ -1,0 +1,24 @@
+# A throwaway cluster for the M4 disk drill, kept apart from the persistent
+# nf-orchestrator one.
+#
+# kind ships evictionHard at 0% for every signal, which switches disk eviction off —
+# the reason drill 3 was abandoned on day 11. Turning it back on is not enough on its
+# own: the node filesystem is the host's, so crossing a 10%-available threshold would
+# mean writing hundreds of gigabytes to a laptop.
+#
+# So the threshold is calibrated to the disk instead of the disk to the threshold.
+# nodefs.available is set just below what the host currently has free, and the drill
+# writes a few gigabytes to cross it. kubelet's behaviour above the line is identical
+# either way; only the arithmetic to get there is different. See drill 5.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        evictionHard:
+          nodefs.available: "840Gi"
+          imagefs.available: "0%"
+          nodefs.inodesFree: "0%"
+        evictionPressureTransitionPeriod: "10s"
