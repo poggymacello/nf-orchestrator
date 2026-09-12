@@ -340,3 +340,67 @@ def test_status_endpoint_reports_the_operation_beside_the_state(
     assert body["helm_status"] == "failed"
     assert body["last_operation"]["state"] == "FAILED"
     assert body["last_operation"]["revision"] == 2
+
+
+# --- drill 5: an evicted pod carries its reason on the pod, not on a container ---
+
+
+def test_a_pod_level_reason_is_used_when_no_container_is_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 5: evicted pods reported reason null, discarding the only useful word."""
+    payload = {
+        "items": [
+            {
+                "metadata": {},
+                "status": {"phase": "Failed", "reason": "Evicted"},
+            }
+        ]
+    }
+    monkeypatch.setattr(reconciler, "run_kubectl", lambda args: json.dumps(payload))
+    assert reconciler.pod_states("disk-nf") == [
+        {"phase": "Failed", "reason": "Evicted", "ready": False}
+    ]
+
+
+def test_a_container_waiting_reason_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "items": [
+            {
+                "metadata": {},
+                "status": {
+                    "phase": "Pending",
+                    "reason": "SomethingPodLevel",
+                    "containerStatuses": [
+                        {"ready": False, "state": {"waiting": {"reason": "ImagePullBackOff"}}}
+                    ],
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(reconciler, "run_kubectl", lambda args: json.dumps(payload))
+    assert reconciler.pod_states("disk-nf")[0]["reason"] == "ImagePullBackOff"
+
+
+def test_an_evicted_pod_makes_the_nf_failed() -> None:
+    pods = [{"phase": "Failed", "reason": "Evicted", "ready": False}]
+    assert derive_state("deployed", pods, 2) is State.FAILED
+
+
+def test_evicted_corpses_beside_a_satisfied_intent_are_not_a_failure() -> None:
+    """Drill 5, finding 2: after recovery the NF reported FAILED forever, because
+    Kubernetes never deletes an evicted pod and the whole list was being judged."""
+    pods = [{"phase": "Failed", "reason": "Evicted", "ready": False}] * 8 + ready(2)
+    assert derive_state("deployed", pods, 2) is State.INSTANTIATED
+
+
+def test_evicted_corpses_with_the_intent_unsatisfied_are_still_a_failure() -> None:
+    pods = [{"phase": "Failed", "reason": "Evicted", "ready": False}] * 8 + [
+        {"phase": "Pending", "reason": None, "ready": False}
+    ] * 2
+    assert derive_state("deployed", pods, 2) is State.FAILED
+
+
+def test_a_live_failure_reason_still_wins_over_a_satisfied_count() -> None:
+    pods = ready(1) + [{"phase": "Running", "reason": "CrashLoopBackOff", "ready": True}]
+    assert derive_state("deployed", pods, 2) is State.FAILED
