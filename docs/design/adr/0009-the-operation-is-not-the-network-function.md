@@ -1,6 +1,7 @@
 # ADR-0009: The operation is not the network function
 
-- **Status:** Accepted
+- **Status:** Accepted; the terminal-phase rule refined 2026-09-12 after
+  [drill 5](../../operations/postmortems/2026-09-12-drill-5-disk-pressure-and-eviction.md)
 - **Date:** 2026-09-01
 - **Closes:** action item 2 of
   [drill 3](../../operations/postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) — the
@@ -60,6 +61,13 @@ costs no extra subprocess.
 becomes `UNKNOWN` rather than the nearest plausible value. This is drill 1's finding 2 applied
 before it can happen again: there, `Succeeded` had no branch and fell into `INSTANTIATING`, which is
 what the function returned whenever it did not recognise what it was looking at.
+
+> **Refined on 2026-09-12.** The rule below — a non-terminating pod in a terminal phase means
+> `FAILED` — is correct only when the intent is *not* otherwise satisfied. Kubernetes never deletes
+> an evicted pod, so after drill 5's eviction the rule reported a fully recovered network function
+> as `FAILED` indefinitely. `derive_state` now judges the NF on its **live** pods and treats a
+> terminal pod as a failure only when the desired count is not met. Drill 1's case, which this rule
+> was written for, is unchanged.
 
 **One exception keeps a failed install honest.** A release where *no* revision ever deployed, whose
 last operation `FAILED`, reports `FAILED`. Such a release will not progress on its own, and without
