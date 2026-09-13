@@ -68,3 +68,19 @@ groups:
             recorded until something succeeds, so this fires on an unresolved failure
             nobody has cleared. Longer window than the NF alerts because it is not an
             outage.
+
+      # Every rule above reads a metric the orchestrator emits, so every rule above is
+      # silent when the scrape itself fails. Drill 6 found exactly that: a frozen control
+      # plane made /metrics slower than the scrape timeout, and nf_cluster_reachable had
+      # no series at all while ClusterUnreachable waited for a 0 that never arrived.
+      - alert: OrchestratorScrapeFailing
+        expr: up{job="nf-orchestrator"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Prometheus cannot scrape the orchestrator"
+          description: >-
+            Every lifecycle alert depends on this scrape succeeding, so while this
+            fires none of them can. Either the orchestrator is down, or /metrics is
+            slower than the scrape timeout — check the target's lastError.
