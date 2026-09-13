@@ -115,7 +115,11 @@ disagreeing about the same underlying truth is the intended behaviour, not a bug
   release this was fine; at a large release count or a tight interval it would not be, and the fix
   then is a real cache or a watch, not a shorter interval.
 - **Cost:** a slow or hanging cluster call now slows the scrape, so cluster latency shows up as
-  scrape latency. Nothing times these subprocesses out yet.
+  scrape latency. ~~Nothing times these subprocesses out yet.~~ **Addressed 2026-09-13** by
+  [drill 6](../../operations/postmortems/2026-09-13-drill-6-frozen-control-plane.md): unbounded,
+  a frozen control plane made the scrape outlast Prometheus's timeout and the `ClusterUnreachable`
+  alert lost its data. Every call is now bounded inside the scrape timeout, and
+  `OrchestratorScrapeFailing` covers a failed scrape.
 - **Cost:** series go stale rather than to zero during an outage, so any dashboard panel over
   `nf_deployment_state` shows a gap. That is deliberate, and it means panels need
   `nf_cluster_reachable` next to them to be readable.
