@@ -6,6 +6,9 @@
 # rather than only when someone calls the API.
 global:
   scrape_interval: 5s
+  # Stated, not inherited. Prometheus clamps an unset timeout to the interval, and the
+  # orchestrator's read timeout is chosen to fail inside it — see drill 6.
+  scrape_timeout: 5s
   evaluation_interval: 5s
 
 rule_files:
