@@ -18,6 +18,9 @@ dev = [
     "pytest",
     "httpx",
     "ruff",
+    # Read by tests/test_doc_claims.py. Declared explicitly: it was only in the local
+    # virtualenv because it had once been installed by hand, and CI would not have had it.
+    "pyyaml",
 ]
 
 [tool.setuptools]
