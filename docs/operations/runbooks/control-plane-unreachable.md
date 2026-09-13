@@ -24,6 +24,18 @@ curl -s -w ' http=%{http_code}' localhost:8000/deployments/<release>
 `503` means "I could not ask the cluster". `502` means the cluster answered and refused — a
 different incident, not this one.
 
+The detail tells you which kind of unreachable. A **refused** connection (the node is stopped)
+fails in under a second with `connection refused`. A **frozen** control plane (the node is up but
+not answering) fails after the read bound with `helm status did not answer within 3s` —
+[drill 6](../postmortems/2026-09-13-drill-6-frozen-control-plane.md). A frozen node shows as running
+in `docker ps`, so step 3 below will not find it stopped: check `docker inspect -f
+'{{.State.Paused}}'`, and for a real cluster, whether the API server is overloaded rather than down.
+
+**Two alerts cover this, and they are not interchangeable.** `ClusterUnreachable` fires when the
+orchestrator is up and cannot reach the cluster. `OrchestratorScrapeFailing` fires when Prometheus
+cannot scrape the orchestrator at all — and while it fires, `ClusterUnreachable` goes *inactive*
+because its series is stale, so an alert clearing is not evidence of recovery.
+
 > **Before 2026-08-21** this endpoint returned HTTP 200 with
 > `{"state":"NOT_INSTANTIATED","helm_status":null,"pods":[]}` during an outage, identical to a
 > genuine teardown, and `DELETE` returned `{"uninstalled": false}` for a release that was still
