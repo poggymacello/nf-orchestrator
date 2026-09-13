@@ -70,6 +70,7 @@ Interpretation of common `REASON` values:
 | `ErrImagePull`, `ImagePullBackOff` | Bad image or tag; check the chart's `image.tag` | `FAILED` |
 | `CrashLoopBackOff` | Container starts and exits; read logs | `FAILED` |
 | `CreateContainerConfigError` | Config/env cannot be built; often transient after a node restart | `INSTANTIATING` |
+| `Evicted` (pod-level) | kubelet removed the pod under node pressure; see [node under disk pressure](node-under-disk-pressure.md) | `FAILED` while the intent is unsatisfied, `INSTANTIATED` once it is again |
 | anything else | Not a recognised failure, but an unready pod either way | `INSTANTIATING` |
 
 The last row is the point of the M4 change: an unrecognised reason no longer passes as success. It
@@ -105,8 +106,8 @@ for i in $(seq 1 10); do echo "$(date +%H:%M:%S) $(curl -s localhost:8000/deploy
 ```
 
 A state that changes across reads is a rollout in progress. A state that is stable and wrong is an
-incident. What counts as a *stable* state for alerting purposes is still an open question
-(drill 1, action item 4).
+incident. For alerting, *stable* is defined by the `for:` window on each rule rather than by the
+application — see [ADR-0007](../../design/adr/0007-stability-is-an-alerting-concern.md).
 
 ## 6. Recovery
 
