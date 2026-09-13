@@ -41,6 +41,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | 3 | Repairing drift the orchestrator did not cause | 2026-08-26 | 3 findings — resubmitting the intent to repair a Deployment scaled outside Helm fails on a server-side apply conflict, and the failed upgrade makes a running workload read `FAILED`. All findings fixed by 2026-09-01 | [drill-3](postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) |
 | 4 | Steering the translator with its own input | 2026-09-09 | 3 findings — every injection was refused, but by the order of a tuple in the source rather than by design; the same accident made ordinary text silently wrong ("from staging to prod" → staging). 1 and 2 fixed, 3 accepted as a limit of validation | [drill-4](postmortems/2026-09-09-drill-4-steering-the-translator-with-text.md) |
 | 5 | Disk pressure and eviction | 2026-09-12 | 3 findings — under real eviction the state was right and the reason discarded, and a **recovered** NF reported `FAILED` forever because Kubernetes never deletes an evicted pod. 1 and 2 fixed, 3 accepted | [drill-5](postmortems/2026-09-12-drill-5-disk-pressure-and-eviction.md) |
+| 6 | A frozen control plane | 2026-09-13 | 3 findings — cluster calls were bounded only by Go's 10s TLS handshake default, twice Prometheus's scrape timeout, so the `ClusterUnreachable` alert had **no data** during the outage it exists for; and no rule covered a failed scrape. All fixed, and both alerts seen firing | [drill-6](postmortems/2026-09-13-drill-6-frozen-control-plane.md) |
 | — | Node disk full | — | Abandoned on 2026-08-20 and superseded by drill 5, which turned eviction back on and calibrated the threshold to the host's free space instead of filling 760 GiB to reach a conventional one | — |
 
 ## Runbooks
@@ -60,12 +61,12 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-All five drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
+All six drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
 they found is now fixed, across ADRs [0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md),
 [0007](../design/adr/0007-stability-is-an-alerting-concern.md),
 [0008](../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md) and
 [0009](../design/adr/0009-the-operation-is-not-the-network-function.md) for drills 1-3, in the
-translator for drill 4, and in the reconciler's derivation for drill 5. Each drill's action-item
+translator for drill 4, in the reconciler's derivation for drill 5, and in the subprocess bounds and alert rules for drill 6. Each drill's action-item
 table says which change closed which finding.
 
 Two items stay open and neither is a defect. Drill 4's finding 3: a well-formed but wrong candidate
