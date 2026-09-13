@@ -126,7 +126,7 @@ Recorded as ADRs with the alternatives that were rejected and why —
 
 ## Tests and CI
 
-122 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
+135 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
 five jobs on every branch push: `lint-test` with no cluster; `secret-scan` (Gitleaks over the full
 history); `banned-terms` (private terms, from a secret, never printed); `vuln-scan` (Trivy over the
 chart and the dependency set); and `e2e`, which creates a kind cluster on each of two pinned
