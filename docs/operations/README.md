@@ -10,9 +10,10 @@ system, with the response written down as if it were real.
 ## Why drills come before runbooks
 
 A runbook written from imagination documents the system you think you built. Every runbook in this
-directory was written **after** a drill, and every command in it was run against the cluster during
-that drill. Where a drill showed the orchestrator reporting something misleading, the runbook says
-so instead of pretending the tool is trustworthy.
+directory was written **after** a drill, from the commands run during it. Where a step could not be
+drilled but the runbook would be incomplete without it, the step is marked **(not drilled)** rather
+than presented as tested. Where a drill showed the orchestrator reporting something misleading, the
+runbook says so instead of pretending the tool is trustworthy.
 
 ## The drill process
 
@@ -47,7 +48,8 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | Runbook | Use when |
 |---|---|
 | [Deployment not reaching INSTANTIATED](runbooks/deployment-not-reaching-instantiated.md) | A deployment is stuck in `INSTANTIATING`, flapping, or reporting `INSTANTIATED` you do not believe |
-| [Control plane unreachable](runbooks/control-plane-unreachable.md) | Deploys return `502 kubernetes cluster unreachable`, or every deployment suddenly reads `NOT_INSTANTIATED` |
+| [Control plane unreachable](runbooks/control-plane-unreachable.md) | Requests that need the cluster return `503`, or `/readyz` is failing |
+| [Node under disk pressure](runbooks/node-under-disk-pressure.md) | A deployment reads `FAILED` with pods showing `reason: Evicted`, or the node reports `DiskPressure=True` |
 
 ## Severity
 

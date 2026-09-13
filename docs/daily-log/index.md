@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-13 | 23 | Turn doc drift into a failing test, and give drill 5 its runbook | [2026-09-13](2026-09-13.md) |
 | 2026-09-12 | 22 | Run the disk drill abandoned on day 11, and find a recovered network function reporting FAILED forever | [2026-09-12](2026-09-12.md) |
 | 2026-09-09 | 21 | The M7 publish pass: read the docs as a stranger, fix every claim that stopped being true | [2026-09-09-3](2026-09-09-3.md) |
 | 2026-09-09 | 20 | Attack the translation boundary, find the injections held by accident, then plug the real model in | [2026-09-09-2](2026-09-09-2.md) |
