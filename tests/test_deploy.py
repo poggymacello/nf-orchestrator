@@ -178,3 +178,50 @@ def test_repair_records_its_own_counter(monkeypatch: pytest.MonkeyPatch) -> None
     before = value()
     client.post("/deployments/sample-nf/repair", json=VALID)
     assert value() == before + 1
+
+
+# --- drill 6: a frozen control plane must fail fast, not after Go's TLS default ---
+
+
+def test_a_command_that_never_answers_is_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def hang(*args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd="kubectl", timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(deploy_engine.ClusterUnreachable, match="did not answer within"):
+        deploy_engine.run_kubectl(["get", "pods"])
+
+
+def test_every_call_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    seen: list[object] = []
+
+    class Done:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def record(*args: object, **kwargs: object) -> Done:
+        seen.append(kwargs.get("timeout"))
+        return Done()
+
+    monkeypatch.setattr(subprocess, "run", record)
+    deploy_engine.run_helm(["status", "x"])
+    deploy_engine.run_kubectl(["get", "pods"])
+    assert None not in seen and all(isinstance(t, float) for t in seen)
+
+
+def test_reads_fail_inside_the_prometheus_scrape_timeout() -> None:
+    """Prometheus gives a scrape 5s. A read bounded any longer loses the metric the
+    ClusterUnreachable alert reads — which is exactly what drill 6 found."""
+    assert deploy_engine.READ_TIMEOUT < 5
+
+
+def test_writes_get_the_longer_bound_and_reads_the_shorter() -> None:
+    assert deploy_engine.timeout_for(["upgrade", "--install", "x"]) == deploy_engine.WRITE_TIMEOUT
+    assert deploy_engine.timeout_for(["uninstall", "x"]) == deploy_engine.WRITE_TIMEOUT
+    assert deploy_engine.timeout_for(["status", "x"]) == deploy_engine.READ_TIMEOUT
+    assert deploy_engine.timeout_for(["get", "pods"]) == deploy_engine.READ_TIMEOUT

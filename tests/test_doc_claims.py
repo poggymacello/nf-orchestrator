@@ -100,3 +100,20 @@ def test_a_claim_that_disappears_fails_rather_than_passes() -> None:
 
     with pytest.raises(AssertionError, match="no longer contains a claim"):
         claimed(r"\b(\d+) widgets\b", "this text makes no such claim", "fixture")
+
+
+def test_committed_config_and_docs_are_valid_utf8() -> None:
+    """Drill 6: a config edited on Windows was written as cp1252. PyYAML read it back with
+    the same default encoding and reported it valid; Prometheus refused to load it with
+    `invalid leading UTF-8 octet`. A check that agrees with the writer proves nothing, so
+    this one decodes strictly."""
+    bad = []
+    for pattern in ("monitoring/*.yml", "charts/**/*.yaml", ".github/workflows/*.yaml", "**/*.md"):
+        for path in ROOT.glob(pattern):
+            if ".venv" in path.parts:
+                continue
+            try:
+                path.read_bytes().decode("utf-8")
+            except UnicodeDecodeError as exc:
+                bad.append(f"{path.relative_to(ROOT)} (byte {exc.start})")
+    assert bad == [], f"not valid UTF-8: {bad}"

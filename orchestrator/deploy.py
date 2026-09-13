@@ -12,6 +12,18 @@ CHART_PATH = Path(__file__).resolve().parent.parent / "charts" / "stand-in-nf"
 # nothing has to edit a constant to point somewhere else.
 KUBE_CONTEXT = os.environ.get("NF_KUBE_CONTEXT", "kind-nf-orchestrator")
 
+# Every helm and kubectl call is bounded. Drill 6 froze the control plane and found the
+# only limit in play was Go's 10-second TLS handshake timeout inside kubectl and helm —
+# an accident of that failure's shape, which a server that completes the handshake and
+# then stalls would not trigger. Ten seconds was also twice Prometheus's scrape timeout,
+# so the metric the ClusterUnreachable alert reads never reached Prometheus at all.
+#
+# Reads serve the status endpoint and the metrics collector, and Prometheus gives a scrape
+# 5s, so a read has to fail well inside that. Writes can legitimately take longer.
+READ_TIMEOUT = float(os.environ.get("NF_READ_TIMEOUT", "3"))
+WRITE_TIMEOUT = float(os.environ.get("NF_WRITE_TIMEOUT", "60"))
+WRITE_VERBS = frozenset({"upgrade", "install", "uninstall", "rollback"})
+
 # Substrings that mean "the cluster could not be reached", as opposed to "the cluster
 # answered and said no". Collected from real helm and kubectl failures during the M4
 # control-plane drill; the Windows wording differs from the POSIX one, so both are here.
@@ -74,28 +86,36 @@ def release_name(intent: Intent) -> str:
     return intent.name
 
 
-def run_helm(args: list[str]) -> str:
-    result = subprocess.run(
-        ["helm", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def run_bounded(command: list[str], timeout: float) -> str:
+    """Run a cluster command, failing as unreachable rather than waiting indefinitely."""
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ClusterUnreachable(
+            f"{command[0]} {command[1] if len(command) > 1 else ''} did not answer "
+            f"within {timeout:g}s"
+        ) from exc
     if result.returncode != 0:
         raise classify_error(result.stderr.strip() or result.stdout.strip())
     return result.stdout
+
+
+def timeout_for(args: list[str]) -> float:
+    return WRITE_TIMEOUT if args and args[0] in WRITE_VERBS else READ_TIMEOUT
+
+
+def run_helm(args: list[str]) -> str:
+    return run_bounded(["helm", *args], timeout_for(args))
 
 
 def run_kubectl(args: list[str]) -> str:
-    result = subprocess.run(
-        ["kubectl", "--context", KUBE_CONTEXT, *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise classify_error(result.stderr.strip() or result.stdout.strip())
-    return result.stdout
+    return run_bounded(["kubectl", "--context", KUBE_CONTEXT, *args], timeout_for(args))
 
 
 def check_cluster() -> str:
