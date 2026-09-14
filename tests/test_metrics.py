@@ -132,3 +132,80 @@ def test_a_broken_release_does_not_hide_the_others(
 
     assert gauge("nf_deployment_state", {"release": "sample-nf", "state": "INSTANTIATED"}) == 1.0
     assert gauge("nf_deployment_state", {"release": "broken-nf", "state": "FAILED"}) is None
+    assert gauge("nf_releases_unreported", {"reason": "error"}) == 1.0
+    assert gauge("nf_releases_unreported", {"reason": "deadline"}) == 0.0
+
+
+# --- drill 7: the scrape has one budget, however many releases there are ---
+
+
+def test_the_scrape_budget_fits_inside_the_prometheus_timeout() -> None:
+    """Prometheus gives a scrape 5s. The budget has to leave room to render and send,
+    and a single read must be able to fail inside it."""
+    assert metrics.SCRAPE_BUDGET < 5
+    assert deploy_engine.READ_TIMEOUT <= metrics.SCRAPE_BUDGET
+
+
+def test_releases_are_reconciled_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    names = [f"nf-{i}" for i in range(8)]
+    monkeypatch.setattr(metrics, "release_names", lambda: names)
+    monkeypatch.setattr(metrics, "SCRAPE_WORKERS", 8)
+
+    def slow(name: str) -> dict[str, object]:
+        time.sleep(0.3)
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "reconcile_release", slow)
+    started = time.monotonic()
+    body = metrics.render().decode()
+    assert time.monotonic() - started < 1.5  # in series this would be 2.4s
+    for name in names:
+        assert f'release="{name}"' in body
+
+
+def test_a_release_past_the_deadline_is_counted_not_waited_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import time
+
+    release = threading.Event()
+    monkeypatch.setattr(metrics, "release_names", lambda: ["fast-nf", "stuck-nf"])
+    monkeypatch.setattr(metrics, "SCRAPE_BUDGET", 0.3)
+
+    def reconcile(name: str) -> dict[str, object]:
+        if name == "stuck-nf":
+            release.wait(5)
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "reconcile_release", reconcile)
+    started = time.monotonic()
+    try:
+        body = metrics.render().decode()
+    finally:
+        release.set()
+    assert time.monotonic() - started < 1.0
+    assert 'nf_deployment_state{release="fast-nf"' in body
+    assert 'nf_deployment_state{release="stuck-nf"' not in body
+    assert 'nf_release_reported{release="stuck-nf"} 0.0' in body
+    assert 'nf_releases_unreported{reason="deadline"} 1.0' in body
+
+
+def test_every_listed_release_says_whether_it_was_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 7: past the deadline the same releases miss out every scrape, so the
+    alert has to be able to name them, not just count them."""
+
+    def reconcile(name: str) -> dict[str, object]:
+        if name == "broken-nf":
+            raise deploy_engine.DeployError("values unreadable")
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["broken-nf", "sample-nf"])
+    monkeypatch.setattr(metrics, "reconcile_release", reconcile)
+
+    assert gauge("nf_release_reported", {"release": "sample-nf"}) == 1.0
+    assert gauge("nf_release_reported", {"release": "broken-nf"}) == 0.0
