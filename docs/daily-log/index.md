@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-14 | 25 | Silence an API server after the handshake, then find twenty healthy releases paging as an outage | [2026-09-14](2026-09-14.md) |
 | 2026-09-13 | 24 | Freeze the control plane, and find the outage alert had no data during the outage | [2026-09-13-2](2026-09-13-2.md) |
 | 2026-09-13 | 23 | Turn doc drift into a failing test, and give drill 5 its runbook | [2026-09-13](2026-09-13.md) |
 | 2026-09-12 | 22 | Run the disk drill abandoned on day 11, and find a recovered network function reporting FAILED forever | [2026-09-12](2026-09-12.md) |

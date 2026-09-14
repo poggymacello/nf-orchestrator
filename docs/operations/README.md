@@ -42,6 +42,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | 4 | Steering the translator with its own input | 2026-09-09 | 3 findings — every injection was refused, but by the order of a tuple in the source rather than by design; the same accident made ordinary text silently wrong ("from staging to prod" → staging). 1 and 2 fixed, 3 accepted as a limit of validation | [drill-4](postmortems/2026-09-09-drill-4-steering-the-translator-with-text.md) |
 | 5 | Disk pressure and eviction | 2026-09-12 | 3 findings — under real eviction the state was right and the reason discarded, and a **recovered** NF reported `FAILED` forever because Kubernetes never deletes an evicted pod. 1 and 2 fixed, 3 accepted | [drill-5](postmortems/2026-09-12-drill-5-disk-pressure-and-eviction.md) |
 | 6 | A frozen control plane | 2026-09-13 | 3 findings — cluster calls were bounded only by Go's 10s TLS handshake default, twice Prometheus's scrape timeout, so the `ClusterUnreachable` alert had **no data** during the outage it exists for; and no rule covered a failed scrape. All fixed, and both alerts seen firing | [drill-6](postmortems/2026-09-13-drill-6-frozen-control-plane.md) |
+| 7 | A stalled API server, and a scrape that outgrew its budget | 2026-09-14 | 4 findings — drill 6's bound held against a post-handshake stall, but it was per call: twenty **healthy** releases took the scrape to 8.4s and `OrchestratorScrapeFailing` paged for an orchestrator that was up; and past a deadline the same releases went unreported every time, with nothing naming them. 1-3 fixed, 4 accepted | [drill-7](postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md) |
 | — | Node disk full | — | Abandoned on 2026-08-20 and superseded by drill 5, which turned eviction back on and calibrated the threshold to the host's free space instead of filling 760 GiB to reach a conventional one | — |
 
 ## Runbooks
@@ -51,6 +52,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | [Deployment not reaching INSTANTIATED](runbooks/deployment-not-reaching-instantiated.md) | A deployment is stuck in `INSTANTIATING`, flapping, or reporting `INSTANTIATED` you do not believe |
 | [Control plane unreachable](runbooks/control-plane-unreachable.md) | Requests that need the cluster return `503`, or `/readyz` is failing |
 | [Node under disk pressure](runbooks/node-under-disk-pressure.md) | A deployment reads `FAILED` with pods showing `reason: Evicted`, or the node reports `DiskPressure=True` |
+| [Scrape over budget](runbooks/scrape-over-budget.md) | `NFReleaseUnreported` is firing, or `nf_releases_unreported` is above zero |
 
 ## Severity
 
@@ -61,15 +63,19 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-All six drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
+All seven drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
 they found is now fixed, across ADRs [0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md),
 [0007](../design/adr/0007-stability-is-an-alerting-concern.md),
 [0008](../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md) and
 [0009](../design/adr/0009-the-operation-is-not-the-network-function.md) for drills 1-3, in the
-translator for drill 4, in the reconciler's derivation for drill 5, and in the subprocess bounds and alert rules for drill 6. Each drill's action-item
+translator for drill 4, in the reconciler's derivation for drill 5, in the subprocess bounds and
+alert rules for drill 6, and in the scrape budget of
+[ADR-0014](../design/adr/0014-the-scrape-has-one-budget.md) for drill 7. Each drill's action-item
 table says which change closed which finding.
 
-Two items stay open and neither is a defect. Drill 4's finding 3: a well-formed but wrong candidate
+Three items stay open and none is a defect. Drill 7's finding 4: a release on the scrape deadline's
+boundary is reported on some scrapes and not others, so no alert window holds for it; it still shows
+in the `deadline` count. Drill 4's finding 3: a well-formed but wrong candidate
 passes every validation check — a limit of validation itself, which only the separation between
 translating and deploying addresses. Drill 5's finding 3: the pods array carries the whole eviction
 history, which is the evidence of what happened and is kept on purpose.
@@ -90,6 +96,12 @@ one. The rule that a terminal pod means failure was added on day 15 to close dri
 and on day 22 it made a fully recovered network function report `FAILED` forever. Nothing between
 those two drills exercised the difference, which is the argument for running drills that are not
 re-runs of the last one.
+
+Drills 6 and 7 added a fourth: a timeout is a budget shared with everything downstream that is also
+counting. Drill 6 bounded each call inside Prometheus's five seconds and was right to; drill 7 found
+nothing bounded the sum, and a cluster with nothing wrong except twenty releases paged as an outage.
+The alert added on day 24 to catch a failing scrape was, on day 25, the alert giving the wrong
+diagnosis — correct about the symptom, wrong about the cause.
 
 Alerting rules built from these drills live in
 [`monitoring/nf-lifecycle.rules.yml`](../../monitoring/nf-lifecycle.rules.yml). Every one carries a
