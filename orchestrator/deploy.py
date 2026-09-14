@@ -86,8 +86,12 @@ def release_name(intent: Intent) -> str:
     return intent.name
 
 
-def run_bounded(command: list[str], timeout: float) -> str:
-    """Run a cluster command, failing as unreachable rather than waiting indefinitely."""
+def run_bounded(command: list[str], args: list[str], timeout: float) -> str:
+    """Run a cluster command, failing as unreachable rather than waiting indefinitely.
+
+    `args` are the caller's arguments without the context flags, so a timeout names
+    the verb that stalled — drill 7 got "kubectl --context did not answer".
+    """
     try:
         result = subprocess.run(
             command,
@@ -97,10 +101,8 @@ def run_bounded(command: list[str], timeout: float) -> str:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise ClusterUnreachable(
-            f"{command[0]} {command[1] if len(command) > 1 else ''} did not answer "
-            f"within {timeout:g}s"
-        ) from exc
+        verb = " ".join([command[0], *args[:1]])
+        raise ClusterUnreachable(f"{verb} did not answer within {timeout:g}s") from exc
     if result.returncode != 0:
         raise classify_error(result.stderr.strip() or result.stdout.strip())
     return result.stdout
@@ -111,11 +113,13 @@ def timeout_for(args: list[str]) -> float:
 
 
 def run_helm(args: list[str]) -> str:
-    return run_bounded(["helm", *args], timeout_for(args))
+    return run_bounded(["helm", *args], args, timeout_for(args))
 
 
 def run_kubectl(args: list[str]) -> str:
-    return run_bounded(["kubectl", "--context", KUBE_CONTEXT, *args], timeout_for(args))
+    return run_bounded(
+        ["kubectl", "--context", KUBE_CONTEXT, *args], args, timeout_for(args)
+    )
 
 
 def check_cluster() -> str:

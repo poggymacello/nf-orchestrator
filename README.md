@@ -3,8 +3,8 @@
 [![CI](https://github.com/poggymacello/nf-orchestrator/actions/workflows/ci.yaml/badge.svg)](https://github.com/poggymacello/nf-orchestrator/actions/workflows/ci.yaml)
 
 Takes a declarative intent, validates it, deploys a network function with Helm onto Kubernetes, and
-reports its lifecycle state from live cluster signals — plus the failure drills that proved the
-reporting wrong three times and the fixes that followed.
+reports its lifecycle state from live cluster signals — plus seven failure drills that each proved
+the reporting wrong, and the fixes that followed.
 
 This is a **self-directed learning project**: a generic re-implementation, built only from public
 sources, of the pattern behind SMO-driven network function orchestration in O-RAN. It runs on one
@@ -86,28 +86,31 @@ $ curl -s -X DELETE localhost:8000/deployments/sample-nf
 | `POST /deployments/{name}/repair` | Apply an intent *and* take ownership of contested fields. Explicit, because it overrides whatever else was writing to them |
 | `DELETE /deployments/{name}` | Uninstall the release. Idempotent |
 | `GET /healthz` · `GET /readyz` | Process liveness · cluster reachability |
-| `GET /metrics` | Prometheus. Reconciles every release at scrape time |
+| `GET /metrics` | Prometheus. Reconciles every release at scrape time, concurrently, inside one budget — and names any release it could not reach in time |
 
 ## The part worth three minutes: the failure drills
 
-Three deliberate failure drills were run against a real cluster, each with a blameless postmortem,
-fixes verified by re-running the drill, and runbooks corrected when a drill proved them wrong. Every
-one found the orchestrator reporting something false.
+Seven deliberate failure drills were run, each with the expected behaviour written down first, a
+blameless postmortem from the captured output, fixes verified by re-running the drill, and runbooks
+corrected when a drill proved them wrong. Every one found the orchestrator — or the monitoring around
+it — reporting something false.
 
 | Drill | What it found |
 |---|---|
 | [1 — pods killed mid-deploy](docs/operations/postmortems/2026-08-20-drill-1-pods-killed-mid-deploy.md) | `INSTANTIATED` reported with **one pod running for a three-replica intent**. The reconciler never read how many replicas the intent asked for |
 | [2 — control plane unreachable](docs/operations/postmortems/2026-08-20-drill-2-control-plane-unreachable.md) | A running NF reported as `NOT_INSTANTIATED` with **HTTP 200**, byte-identical to the response after a real teardown |
 | [3 — repairing drift](docs/operations/postmortems/2026-08-26-drill-3-repairing-drift-outside-helm.md) | Repairing drift through the API failed on a server-side apply conflict, and the failed upgrade made a **still-serving workload read `FAILED`** |
+| [4 — steering the translator](docs/operations/postmortems/2026-09-09-drill-4-steering-the-translator-with-text.md) | Every injection was refused — by the order of a tuple in the source, not by design. The same accident turned "from staging to prod" into **staging** |
+| [5 — disk pressure and eviction](docs/operations/postmortems/2026-09-12-drill-5-disk-pressure-and-eviction.md) | Under real eviction, a **fully recovered** NF reported `FAILED` forever, because Kubernetes never deletes an evicted pod |
+| [6 — a frozen control plane](docs/operations/postmortems/2026-09-13-drill-6-frozen-control-plane.md) | Cluster calls were bounded only by Go's TLS default, twice Prometheus's scrape timeout, so **the outage alert had no data during the outage** |
+| [7 — the scrape outgrows its budget](docs/operations/postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md) | Twenty **healthy** releases took the scrape to 8.4s against a 5s timeout, and the alert for a failed scrape **paged that a running orchestrator was down** |
 
-Eleven findings, every defect fixed and re-verified. They turned out to be one mistake in four
-places: two things that are usually equal, collapsed into a single value, diverging only during an
-incident — pod phase versus container readiness, release-absent versus cluster-unreachable, intent
-submitted versus intent applied, operation failed versus network function failed.
-
-A fourth drill (node disk full) was **abandoned before running it**: kind ships `evictionHard` at
-`0%`, so no amount of filling produces `DiskPressure`, and the node filesystem is the host's. The
-reasoning is written down rather than the drill being run badly.
+24 findings. Every defect is fixed and re-verified; three are limits, accepted and written down.
+Drills 1-3 were one mistake in four places: two things that are usually equal, collapsed into a
+single value, diverging only during an incident — pod phase versus container readiness,
+release-absent versus cluster-unreachable, intent submitted versus intent applied, operation failed
+versus network function failed. Drills 6 and 7 were one mistake in two: a correct value computed and
+then discarded by a caller counting on a shorter clock.
 
 Process, severity model and runbooks: [`docs/operations/`](docs/operations/README.md).
 
@@ -123,10 +126,11 @@ Recorded as ADRs with the alternatives that were rejected and why —
 | [0007](docs/design/adr/0007-stability-is-an-alerting-concern.md) | Stability belongs in the alerting rule's `for:` window, not in the application |
 | [0008](docs/design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md) | The deploy path never forces conflicts; repair is a separate, named operation |
 | [0009](docs/design/adr/0009-the-operation-is-not-the-network-function.md) | The operation is not the network function |
+| [0014](docs/design/adr/0014-the-scrape-has-one-budget.md) | The scrape has one budget, and a release with no coverage is named rather than counted |
 
 ## Tests and CI
 
-140 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
+147 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
 five jobs on every branch push: `lint-test` with no cluster; `secret-scan` (Gitleaks over the full
 history); `banned-terms` (private terms, from a secret, never printed); `vuln-scan` (Trivy over the
 chart and the dependency set); and `e2e`, which creates a kind cluster on each of two pinned
@@ -169,7 +173,7 @@ Status per milestone: [`docs/milestone-map.md`](docs/milestone-map.md).
 
 | | |
 |---|---|
-| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 12 ADRs |
+| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 13 ADRs |
 | [Operations](docs/operations/README.md) | Failure drills, postmortems, runbooks, alerting |
 | [Build log](docs/build-log/) | Per-milestone: what was set out to do, what broke, what was learned |
 | [Daily log](docs/daily-log/) | A dated record of every working day on this project |

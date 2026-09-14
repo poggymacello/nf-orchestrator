@@ -1,4 +1,7 @@
+import os
+import time
 from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any
 
 from prometheus_client import CollectorRegistry, Counter, generate_latest
@@ -9,6 +12,17 @@ from orchestrator.deploy import DeployError, list_releases
 from orchestrator.reconciler import OperationState, State
 
 REGISTRY = CollectorRegistry()
+
+# The whole scrape gets a deadline, not just each call. Drill 7 found the day-24 bound was
+# per subprocess while a scrape makes four per release in series: twenty healthy releases
+# took 8.4s against Prometheus's 5s, so the target went down and OrchestratorScrapeFailing
+# paged for an orchestrator and a cluster that were both fine.
+#
+# Releases are reconciled concurrently, and whatever has not finished by the deadline is
+# counted in nf_releases_unreported instead of holding the scrape past the point where
+# Prometheus abandons it and keeps nothing.
+SCRAPE_BUDGET = float(os.environ.get("NF_SCRAPE_BUDGET", "4"))
+SCRAPE_WORKERS = int(os.environ.get("NF_SCRAPE_WORKERS", "8"))
 
 deployments_total = Counter(
     "deployments_total",
@@ -65,12 +79,14 @@ class LifecycleCollector:
     Cardinality is four series per release for `nf_deployment_state` plus two more,
     bounded by the number of releases rather than by anything unbounded.
 
-    The cost is real and deliberate: one `helm list` plus three subprocesses per
-    release per scrape. At a 15s interval and a handful of releases that is fine, and
-    it is the same trade-off ADR-0005 already accepted for the status endpoint.
+    The cost is real and deliberate: one `helm list` plus four subprocesses per release
+    per scrape — the same trade-off ADR-0005 accepted for the status endpoint. What that
+    trade-off did not survive is running them in series inside a fixed scrape timeout;
+    see ADR-0014.
     """
 
     def collect(self) -> Iterator[GaugeMetricFamily]:
+        deadline = time.monotonic() + SCRAPE_BUDGET
         reachable = GaugeMetricFamily(
             "nf_cluster_reachable",
             "1 when the orchestrator could reach the cluster during this scrape",
@@ -106,11 +122,42 @@ class LifecycleCollector:
             yield reachable
             return
 
+        unreported = GaugeMetricFamily(
+            "nf_releases_unreported",
+            "Releases listed this scrape that emitted no lifecycle series, by reason",
+            labels=["reason"],
+        )
+        # One series per listed release, present even when its reconcile did not finish.
+        # Drill 7 found the releases that miss the deadline are the same ones every scrape
+        # — the tail of helm's order — so a count alone hides which NFs have no alerting.
+        reported = GaugeMetricFamily(
+            "nf_release_reported",
+            "1 if the release's lifecycle series were emitted this scrape, 0 if not",
+            labels=["release"],
+        )
         reachable.add_metric([], 1.0)
-        for name in names:
-            current = snapshot(name)
-            if current is None:
+
+        pool = ThreadPoolExecutor(max_workers=SCRAPE_WORKERS)
+        futures: dict[str, Future[dict[str, Any] | None]] = {
+            name: pool.submit(snapshot, name) for name in names
+        }
+        wait(futures.values(), timeout=max(0.0, deadline - time.monotonic()))
+        # Queued work is dropped; anything already running is itself bounded by the
+        # per-call timeout, so abandoning it cannot leave a subprocess behind for long.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+        late = errored = 0
+        for name, future in futures.items():
+            if not future.done() or future.cancelled():
+                late += 1
+                reported.add_metric([name], 0.0)
                 continue
+            current = future.result()
+            if current is None:
+                errored += 1
+                reported.add_metric([name], 0.0)
+                continue
+            reported.add_metric([name], 1.0)
             for member in State:
                 state.add_metric(
                     [name, member.value],
@@ -124,7 +171,12 @@ class LifecycleCollector:
                     [name, member.value], 1.0 if last == member.value else 0.0
                 )
 
+        unreported.add_metric(["deadline"], float(late))
+        unreported.add_metric(["error"], float(errored))
+
         yield reachable
+        yield unreported
+        yield reported
         yield state
         yield desired
         yield ready

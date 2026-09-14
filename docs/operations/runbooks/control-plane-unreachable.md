@@ -30,11 +30,18 @@ not answering) fails after the read bound with `helm status did not answer withi
 [drill 6](../postmortems/2026-09-13-drill-6-frozen-control-plane.md). A frozen node shows as running
 in `docker ps`, so step 3 below will not find it stopped: check `docker inspect -f
 '{{.State.Paused}}'`, and for a real cluster, whether the API server is overloaded rather than down.
+An API server that accepts the connection and then goes silent produces the same message
+(`kubectl get did not answer within 3s`) with nothing paused at all —
+[drill 7](../postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md). Without the bound,
+kubectl and helm waited there for as long as they were allowed to.
 
 **Two alerts cover this, and they are not interchangeable.** `ClusterUnreachable` fires when the
 orchestrator is up and cannot reach the cluster. `OrchestratorScrapeFailing` fires when Prometheus
 cannot scrape the orchestrator at all — and while it fires, `ClusterUnreachable` goes *inactive*
 because its series is stale, so an alert clearing is not evidence of recovery.
+
+If `NFReleaseUnreported` is firing instead, the cluster is reachable and the scrape is short of
+time — that is [scrape over budget](scrape-over-budget.md), not this runbook.
 
 > **Before 2026-08-21** this endpoint returned HTTP 200 with
 > `{"state":"NOT_INSTANTIATED","helm_status":null,"pods":[]}` during an outage, identical to a
