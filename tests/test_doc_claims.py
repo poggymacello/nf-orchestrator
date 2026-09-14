@@ -80,6 +80,29 @@ def test_readme_adr_count() -> None:
     assert stated == actual, f"README.md says {stated} ADRs; docs/design/adr holds {actual}"
 
 
+def postmortems() -> list[Path]:
+    return sorted((ROOT / "docs" / "operations" / "postmortems").glob("*-drill-*.md"))
+
+
+def test_readme_drill_count_and_table() -> None:
+    """Day 25: the README said "Three deliberate failure drills" and called the disk drill
+    abandoned, three drills after both stopped being true. Nothing pinned it."""
+    readme = read("README.md")
+    stated = claimed(r"\b(\w+) deliberate failure drills\b", readme, "README.md")
+    assert stated == len(postmortems())
+    linked = set(re.findall(r"docs/operations/postmortems/([\w.-]+\.md)", readme))
+    missing = [path.name for path in postmortems() if path.name not in linked]
+    assert missing == [], f"README.md drill table does not link {missing}"
+
+
+def test_operations_index_links_every_postmortem() -> None:
+    index = read("docs/operations/README.md")
+    stated = claimed(r"All (\w+) drills", index, "docs/operations/README.md")
+    assert stated == len(postmortems())
+    missing = [path.name for path in postmortems() if f"postmortems/{path.name}" not in index]
+    assert missing == [], f"docs/operations/README.md does not link {missing}"
+
+
 def ci_jobs() -> int:
     return len(yaml.safe_load(read(".github/workflows/ci.yaml"))["jobs"])
 
