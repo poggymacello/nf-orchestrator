@@ -84,3 +84,21 @@ groups:
             Every lifecycle alert depends on this scrape succeeding, so while this
             fires none of them can. Either the orchestrator is down, or /metrics is
             slower than the scrape timeout — check the target's lastError.
+
+      # The scrape now stops at its budget instead of failing whole (drill 7), which
+      # moves the gap somewhere quieter: a release that did not finish in time simply has
+      # no series, and every per-release rule above is silent about it. It is the same
+      # releases every scrape, so this names them rather than counting them.
+      - alert: NFReleaseUnreported
+        expr: nf_release_reported == 0
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.release }} has no lifecycle series, so nothing can alert on it"
+          description: >-
+            The scrape is up, but this release is not being reported. Check
+            nf_releases_unreported: reason="deadline" means the scrape ran out of
+            budget (too many releases or a slow API server) and will keep skipping the
+            same releases; reason="error" means reading this release failed. Follow
+            runbooks/scrape-over-budget.md.
