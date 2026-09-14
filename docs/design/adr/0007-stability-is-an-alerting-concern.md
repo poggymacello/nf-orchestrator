@@ -111,9 +111,13 @@ disagreeing about the same underlying truth is the intended behaviour, not a bug
   ADR-0005 gap without a background controller.
 - **Good:** `for:` windows are per-alert and editable by whoever owns the alerting, without touching
   the orchestrator.
-- **Cost:** the scrape now costs one `helm list` plus three subprocesses per release. At 5s and one
-  release this was fine; at a large release count or a tight interval it would not be, and the fix
-  then is a real cache or a watch, not a shorter interval.
+- **Cost:** the scrape now costs one `helm list` plus ~~three~~ four subprocesses per release. At 5s
+  and one release this was fine; at a large release count or a tight interval it would not be, and
+  the fix then is a real cache or a watch, not a shorter interval. **Measured 2026-09-14** by
+  [drill 7](../../operations/postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md):
+  twenty healthy releases took the serial scrape to 8.4s and paged as an orchestrator outage. Fixed
+  with a scrape-wide budget and concurrent reconciles rather than a cache, for the reasons in
+  [ADR-0014](0014-the-scrape-has-one-budget.md).
 - **Cost:** a slow or hanging cluster call now slows the scrape, so cluster latency shows up as
   scrape latency. ~~Nothing times these subprocesses out yet.~~ **Addressed 2026-09-13** by
   [drill 6](../../operations/postmortems/2026-09-13-drill-6-frozen-control-plane.md): unbounded,
