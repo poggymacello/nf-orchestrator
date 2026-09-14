@@ -194,6 +194,23 @@ def test_a_command_that_never_answers_is_unreachable(monkeypatch: pytest.MonkeyP
         deploy_engine.run_kubectl(["get", "pods"])
 
 
+def test_a_timeout_names_the_verb_not_the_context_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 7: the message read "kubectl --context did not answer within 3s"."""
+    import subprocess
+
+    def hang(*args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd="kubectl", timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(deploy_engine.ClusterUnreachable) as caught:
+        deploy_engine.run_kubectl(["get", "--raw=/readyz"])
+    assert str(caught.value) == (
+        f"kubectl get did not answer within {deploy_engine.READ_TIMEOUT:g}s"
+    )
+
+
 def test_every_call_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 
