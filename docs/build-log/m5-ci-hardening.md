@@ -94,9 +94,9 @@ Not covered:
 - **Drill 2, control plane unreachable.** Stopping the kind node mid-job would make a real failure
   indistinguishable from a flaky runner. Those paths are unit tested against the exact strings the
   drill produced.
-- **The `banned-terms` job until its secret is set.** It fails closed, so it is red until
+- ~~**The `banned-terms` job until its secret is set.** It fails closed, so it is red until
   `gh secret set BANNED_TERMS` is run. That is the design working, and it means the CI badge shows
-  failure in the meantime.
+  failure in the meantime.~~ The secret was set on 2026-09-14; the job has passed since.
 - **Development's own Kubernetes version.** The matrix runs v1.34.0 and v1.35.0; local development
   is on v1.36.1. Narrower than before, not closed.
 - **Reproducible dependency scanning.** Dependencies are unpinned, so the scan describes today's

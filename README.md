@@ -130,7 +130,7 @@ Recorded as ADRs with the alternatives that were rejected and why —
 
 ## Tests and CI
 
-147 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
+156 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
 five jobs on every branch push: `lint-test` with no cluster; `secret-scan` (Gitleaks over the full
 history); `banned-terms` (private terms, from a secret, never printed); `vuln-scan` (Trivy over the
 chart and the dependency set); and `e2e`, which creates a kind cluster on each of two pinned
@@ -142,10 +142,11 @@ Helm is pinned to 4.2.2 in CI, because the conflict behaviour those tests assert
 Helm 3 — a job on Helm 3 would pass for the wrong reason. Third-party actions are pinned to commit
 SHAs and scanner images to digests.
 
-> **The CI badge is red, on purpose.** `banned-terms` fails closed when its term list is not
-> configured, because a scan that is switched off and a scan that finds nothing produce identical
-> output. The list is deliberately not in this repository — it arrives as a secret — so the job
-> stays red until `gh secret set BANNED_TERMS` is run. The other four jobs pass. Reasoning in
+> **`banned-terms` fails closed.** With no term list configured it fails rather than passing,
+> because a scan that is switched off and a scan that finds nothing produce identical output. The
+> list is deliberately not in this repository — it arrives as a secret — so for its first two weeks
+> the job was red by design. The secret was set on 2026-09-14 and every job has passed since. It
+> scans tracked files, not history; Gitleaks covers history for credentials. Reasoning in
 > [ADR-0010](docs/design/adr/0010-leak-gates-must-not-leak.md).
 
 ```bash

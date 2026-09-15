@@ -55,9 +55,15 @@ curl -s -o /dev/null -w '%{time_total}s\n' localhost:8000/metrics
 helm list --kube-context kind-nf-orchestrator -o json | python -c "import json,sys; print(len(json.load(sys.stdin)))"
 ```
 
-On the drill host, with eight workers, twenty releases scraped in 1.3-2.2s. A scrape pinned at the
-budget with a similar count means each call is slow, not that there are too many of them — check
-the API server before adding workers. With one worker, twenty releases took 8.4s unbounded.
+That count stops at 256: `helm list` returns at most 256 releases and does not say so. If it prints
+exactly 256, there are probably more — add `--max 1000`, or page with `--offset`. The orchestrator
+pages since 2026-09-15.
+
+Reference numbers from the development host, eight workers, measured 2026-09-15 after the scrape
+went from four calls per release to two: 22 releases in 0.83s, 40 in 1.39s, 60 in 2.05s. (Drill 7's
+build, before that change: 20 releases in 1.3-2.2s, and 60 in 4.28s — past the budget.) A scrape
+pinned at the budget with far fewer releases than that means each call is slow, not that there are
+too many of them — check the API server before adding workers.
 
 ## 3. Find out which releases have had no coverage, and for how long
 
@@ -94,7 +100,8 @@ existed.
 
 - **A release on the boundary.** One that is reported on some scrapes and not others holds no alert
   window, including `NFReleaseUnreported`. It shows in the `deadline` count. Drill 7, finding 4.
-- **Reducing calls per release, or a cache.** The structural fixes when concurrency stops being
-  enough — [ADR-0014](../../design/adr/0014-the-scrape-has-one-budget.md). Not built.
+- **A cache.** The structural fix when concurrency and two calls per release stop being enough —
+  [ADR-0014](../../design/adr/0014-the-scrape-has-one-budget.md). Not built. (Reducing calls per
+  release, the other one listed there, was built on 2026-09-15.)
 - **An API server slow under real load.** The drill simulated growth and a silent connection, not a
   busy control plane. **(not drilled)**
