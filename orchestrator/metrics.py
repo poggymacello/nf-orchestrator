@@ -56,14 +56,20 @@ def release_names() -> list[str]:
     return list_releases()
 
 
-def reconcile_release(name: str) -> dict[str, Any]:
-    return reconciler.reconcile(name)
+def release_pods() -> dict[str, list[dict[str, Any]]]:
+    return reconciler.pods_by_release()
 
 
-def snapshot(name: str) -> dict[str, Any] | None:
+def reconcile_release(
+    name: str, pods: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    return reconciler.reconcile(name, pods)
+
+
+def snapshot(name: str, pods: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
     """Reconcile one release, or None if it cannot be read this scrape."""
     try:
-        return reconcile_release(name)
+        return reconcile_release(name, pods)
     except UNAVAILABLE:
         return None
 
@@ -79,10 +85,10 @@ class LifecycleCollector:
     Cardinality is four series per release for `nf_deployment_state` plus two more,
     bounded by the number of releases rather than by anything unbounded.
 
-    The cost is real and deliberate: one `helm list` plus four subprocesses per release
-    per scrape — the same trade-off ADR-0005 accepted for the status endpoint. What that
-    trade-off did not survive is running them in series inside a fixed scrape timeout;
-    see ADR-0014.
+    The cost is real and deliberate: `helm list`, one pod listing for every release, and
+    two helm calls per release (history, values) — `2 + 2N` subprocesses per scrape, down
+    from `1 + 4N` before day 26. What the original trade-off did not survive is running
+    them in series inside a fixed scrape timeout; see ADR-0014.
     """
 
     def collect(self) -> Iterator[GaugeMetricFamily]:
@@ -137,9 +143,18 @@ class LifecycleCollector:
         )
         reachable.add_metric([], 1.0)
 
+        # Every release's pods in one call. If that call fails, each reconcile falls back
+        # to reading its own pods, so a failure lands in the per-release accounting below
+        # instead of needing a path of its own.
+        try:
+            pods: dict[str, list[dict[str, Any]]] | None = release_pods()
+        except UNAVAILABLE:
+            pods = None
+
         pool = ThreadPoolExecutor(max_workers=SCRAPE_WORKERS)
         futures: dict[str, Future[dict[str, Any] | None]] = {
-            name: pool.submit(snapshot, name) for name in names
+            name: pool.submit(snapshot, name, None if pods is None else pods.get(name, []))
+            for name in names
         }
         wait(futures.values(), timeout=max(0.0, deadline - time.monotonic()))
         # Queued work is dropped; anything already running is itself bounded by the

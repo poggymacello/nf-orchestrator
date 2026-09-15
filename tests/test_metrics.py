@@ -17,6 +17,7 @@ def no_cluster_during_scrape(monkeypatch: pytest.MonkeyPatch) -> None:
         raise deploy_engine.ClusterUnreachable("no cluster in tests")
 
     monkeypatch.setattr(metrics, "release_names", unreachable)
+    monkeypatch.setattr(metrics, "release_pods", dict)
 
 
 def counter_value(result: str, environment: str) -> float:
@@ -85,7 +86,7 @@ def test_collector_emits_one_state_gauge_per_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
-    monkeypatch.setattr(metrics, "reconcile_release", lambda name: SNAPSHOT)
+    monkeypatch.setattr(metrics, "reconcile_release", lambda name, pods=None: SNAPSHOT)
 
     assert gauge("nf_cluster_reachable", {}) == 1.0
     assert gauge("nf_deployment_state", {"release": "sample-nf", "state": "INSTANTIATED"}) == 1.0
@@ -98,7 +99,7 @@ def test_collector_emits_one_state_gauge_per_state(
 def test_shortfall_is_visible_in_the_gauges(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshot = {**SNAPSHOT, "state": "INSTANTIATING", "ready_replicas": 1}
     monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
-    monkeypatch.setattr(metrics, "reconcile_release", lambda name: snapshot)
+    monkeypatch.setattr(metrics, "reconcile_release", lambda name, pods=None: snapshot)
 
     assert gauge("nf_deployment_state", {"release": "sample-nf", "state": "INSTANTIATED"}) == 0.0
     assert gauge("nf_deployment_desired_replicas", {"release": "sample-nf"}) == 2.0
@@ -122,7 +123,7 @@ def test_unreachable_cluster_emits_no_release_series(
 def test_a_broken_release_does_not_hide_the_others(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def reconcile(name: str) -> dict[str, object]:
+    def reconcile(name: str, pods: object = None) -> dict[str, object]:
         if name == "broken-nf":
             raise deploy_engine.DeployError("release has no replicaCount in its values")
         return SNAPSHOT
@@ -153,7 +154,7 @@ def test_releases_are_reconciled_concurrently(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(metrics, "release_names", lambda: names)
     monkeypatch.setattr(metrics, "SCRAPE_WORKERS", 8)
 
-    def slow(name: str) -> dict[str, object]:
+    def slow(name: str, pods: object = None) -> dict[str, object]:
         time.sleep(0.3)
         return {**SNAPSHOT, "release": name}
 
@@ -175,7 +176,7 @@ def test_a_release_past_the_deadline_is_counted_not_waited_for(
     monkeypatch.setattr(metrics, "release_names", lambda: ["fast-nf", "stuck-nf"])
     monkeypatch.setattr(metrics, "SCRAPE_BUDGET", 0.3)
 
-    def reconcile(name: str) -> dict[str, object]:
+    def reconcile(name: str, pods: object = None) -> dict[str, object]:
         if name == "stuck-nf":
             release.wait(5)
         return {**SNAPSHOT, "release": name}
@@ -199,7 +200,7 @@ def test_every_listed_release_says_whether_it_was_reported(
     """Drill 7: past the deadline the same releases miss out every scrape, so the
     alert has to be able to name them, not just count them."""
 
-    def reconcile(name: str) -> dict[str, object]:
+    def reconcile(name: str, pods: object = None) -> dict[str, object]:
         if name == "broken-nf":
             raise deploy_engine.DeployError("values unreadable")
         return {**SNAPSHOT, "release": name}
@@ -209,3 +210,51 @@ def test_every_listed_release_says_whether_it_was_reported(
 
     assert gauge("nf_release_reported", {"release": "sample-nf"}) == 1.0
     assert gauge("nf_release_reported", {"release": "broken-nf"}) == 0.0
+
+
+# --- day 26: one pod listing per scrape ---
+
+
+def test_the_scrape_lists_pods_once_and_hands_each_release_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listings: list[int] = []
+    received: dict[str, object] = {}
+    by_release = {"a-nf": [{"phase": "Running", "reason": None, "ready": True}]}
+
+    def release_pods() -> dict[str, object]:
+        listings.append(1)
+        return by_release
+
+    def reconcile(name: str, pods: object = None) -> dict[str, object]:
+        received[name] = pods
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["a-nf", "b-nf"])
+    monkeypatch.setattr(metrics, "release_pods", release_pods)
+    monkeypatch.setattr(metrics, "reconcile_release", reconcile)
+
+    metrics.render()
+    assert listings == [1]
+    assert received == {"a-nf": by_release["a-nf"], "b-nf": []}
+
+
+def test_a_failed_pod_listing_falls_back_to_per_release_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    def listing_fails() -> dict[str, object]:
+        raise deploy_engine.DeployError("forbidden: cannot list pods cluster-wide")
+
+    def reconcile(name: str, pods: object = "unset") -> dict[str, object]:
+        received[name] = pods
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["a-nf"])
+    monkeypatch.setattr(metrics, "release_pods", listing_fails)
+    monkeypatch.setattr(metrics, "reconcile_release", reconcile)
+
+    body = metrics.render().decode()
+    assert received == {"a-nf": None}
+    assert 'nf_release_reported{release="a-nf"} 1.0' in body
