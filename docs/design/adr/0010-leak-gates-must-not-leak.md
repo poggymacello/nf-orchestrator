@@ -103,7 +103,9 @@ banned-terms: 107 match(es) found                                    exit 1
   the leak.
 - **Cost:** the `banned-terms` job **fails until `BANNED_TERMS` is set** on the repository. That is
   the fail-closed choice working as intended, but it means CI is red until one command is run:
-  `gh secret set BANNED_TERMS < your-term-list.txt`.
+  `gh secret set BANNED_TERMS < your-term-list.txt`. **Set 2026-09-14**; the first run against it,
+  on 2026-09-15, logged `banned-terms: clean against 1 terms` — the count, never the term. That
+  covers tracked files only, per the scope above; history has not been scanned against the list.
 - **Cost:** a pull request from a fork cannot read the secret, so this job would fail there. This is
   a single-author project with no external contributors; if that changes, the job needs a
   `pull_request_target` split or an explicit exemption, and neither is worth building now.
