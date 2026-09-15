@@ -111,7 +111,8 @@ disagreeing about the same underlying truth is the intended behaviour, not a bug
   ADR-0005 gap without a background controller.
 - **Good:** `for:` windows are per-alert and editable by whoever owns the alerting, without touching
   the orchestrator.
-- **Cost:** the scrape now costs one `helm list` plus ~~three~~ four subprocesses per release. At 5s
+- **Cost:** the scrape now costs one `helm list` plus ~~three~~ four subprocesses per release (two,
+  plus one pod listing for all of them, since 2026-09-15 — ADR-0014). At 5s
   and one release this was fine; at a large release count or a tight interval it would not be, and
   the fix then is a real cache or a watch, not a shorter interval. **Measured 2026-09-14** by
   [drill 7](../../operations/postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md):
