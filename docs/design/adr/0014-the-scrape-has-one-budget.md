@@ -64,8 +64,9 @@ cluster during that scrape. ADR-0005 and ADR-0007 both still hold.
 - **Cost:** abandoned reconciles keep running for up to the read timeout after the scrape has
   answered, so a scrape that hits the deadline leaves some work overlapping the next one.
 - **Cost:** this moves the ceiling, it does not remove it. Eight workers should fit several times
-  more releases in the same budget on the same host; **that number was not measured**, and past it
-  the named alerts are the signal that the fix below is due.
+  more releases in the same budget on the same host; ~~that number was not measured~~ — **measured
+  2026-09-15** (below): with this ADR alone, 60 releases took 4.28s and the budget was already
+  cutting releases. Past the ceiling, the named alerts are the signal that the next fix is due.
 
 ## Alternatives considered
 
@@ -86,4 +87,43 @@ cluster during that scrape. ADR-0005 and ADR-0007 both still hold.
   the gap; rotating would hide it.
 - **Fewer calls per release** (reading status, history and values in one helm call). Worth doing,
   and not done here: it reduces the slope, but the collector would still have no deadline, and a
-  slope is what drill 7 showed eventually crosses a fixed line.
+  slope is what drill 7 showed eventually crosses a fixed line. **Done as well on 2026-09-15** — see
+  below — as a complement to the budget, not a replacement for it.
+
+## Revisited 2026-09-15: the ceiling, measured, and the slope halved
+
+Each subprocess cost 94-110ms on the development host, and 63ms of that is starting the process —
+`helm version` and `kubectl version --client`, which make no API call, cost the same 63ms. The slope
+is set by how many calls a scrape makes, not by how slow the API is.
+
+Two of the four calls per release were removable:
+
+- **`helm status` duplicated `helm history`.** The newest history entry's status is the release
+  status. Checked on a real cluster in every state that could be produced — deployed, failed upgrade,
+  failed first install, pending-install, pending-upgrade, and absent, where both fail with the same
+  `release: not found` — and they agreed every time. `uninstalling` is too brief to catch and was not
+  checked.
+- **One `kubectl get pods -l app` replaces one call per release.** Grouping by the `app` label gives
+  each release exactly what `-l app=<name>` gives it. If the listing fails, each release falls back
+  to its own call, so the failure lands in the existing per-release accounting.
+
+A scrape is now `2 + 2N` subprocesses instead of `1 + 4N`. The new code was run beside the old on the
+same cluster, 22 releases plus one absent, three rounds: **zero differences** in state, helm status,
+replica counts, last operation or pods, covering all four lifecycle states and all four operation
+states. Scrape cost, median of three, budget lifted so the real cost shows:
+
+| Releases | before, 1 worker | after, 1 worker | before, 8 workers | after, 8 workers |
+|---|---|---|---|---|
+| 22 | 6.81s | 3.19s | 1.58s | 0.83s |
+| 40 | 12.72s | 5.92s | 2.83s | 1.39s |
+| 60 | 20.27s | 8.99s | **4.28s** | 2.05s |
+
+Then against Prometheus at 60 releases with default settings: the previous build pinned every scrape
+at the 4.0s budget and left **4 releases with no series**; this build scraped in 1.99-2.24s and
+reported all 60. Extrapolating the last column puts the new ceiling somewhere past 100 releases on
+this host. That was not run.
+
+Reading `helm list --help` for this turned up a silent cap: `helm list` returns at most 256 releases
+unless paged, and `--max 0` means the server's default, not "all". A release past the cut would have
+had no series *and* no `nf_release_reported`, so the named alert could not have named it.
+`list_releases` now pages with `--offset`.

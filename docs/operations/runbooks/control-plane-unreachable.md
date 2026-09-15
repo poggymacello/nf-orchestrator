@@ -100,6 +100,23 @@ stopped, not deleted. That is recoverable without losing any release.
 docker start nf-orchestrator-control-plane
 ```
 
+**If it refuses with `ports are not available ... bind: An attempt was made to access a socket in a
+way forbidden by its access permissions`**, the node is fine and Windows has reserved its API port.
+Seen on 2026-09-15 after Docker Desktop restarted: port 64114 sat inside a reserved range, with
+nothing listening on it. Confirm:
+
+```bash
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+A range covering the port in the error is the cause. Restarting Windows NAT from an **administrator**
+shell releases the dynamic reservations, after which `docker start` should succeed. **(not drilled —
+the fix was handed to the machine's owner rather than run, because it restarts a system service)**
+
+```bash
+net stop winnat && net start winnat
+```
+
 Then wait for the API server rather than assuming:
 
 ```bash
