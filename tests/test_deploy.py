@@ -242,3 +242,38 @@ def test_writes_get_the_longer_bound_and_reads_the_shorter() -> None:
     assert deploy_engine.timeout_for(["uninstall", "x"]) == deploy_engine.WRITE_TIMEOUT
     assert deploy_engine.timeout_for(["status", "x"]) == deploy_engine.READ_TIMEOUT
     assert deploy_engine.timeout_for(["get", "pods"]) == deploy_engine.READ_TIMEOUT
+
+
+# --- day 26: helm list stops at 256 and says nothing ---
+
+
+def paged_helm(names: list[str], calls: list[list[str]]):
+    def fake(args: list[str]) -> str:
+        calls.append(args)
+        size = int(args[args.index("--max") + 1])
+        offset = int(args[args.index("--offset") + 1])
+        return json.dumps([{"name": n} for n in names[offset : offset + size]])
+
+    return fake
+
+
+def test_list_releases_reads_past_the_first_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    names = [f"nf-{i:03d}" for i in range(600)]
+    calls: list[list[str]] = []
+    monkeypatch.setattr(deploy_engine, "run_helm", paged_helm(names, calls))
+    assert deploy_engine.list_releases() == names
+    assert len(calls) == 3
+
+
+def test_list_releases_on_an_exact_page_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    names = [f"nf-{i:03d}" for i in range(512)]
+    calls: list[list[str]] = []
+    monkeypatch.setattr(deploy_engine, "run_helm", paged_helm(names, calls))
+    assert deploy_engine.list_releases() == names
+    assert len(calls) == 3  # two full pages, then an empty one ends it
+
+
+def test_a_release_seen_on_two_pages_is_listed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = iter([[{"name": "a"}, {"name": "b"}], [{"name": "b"}]])
+    monkeypatch.setattr(deploy_engine, "run_helm", lambda args: json.dumps(next(pages)))
+    assert deploy_engine.list_releases(page=2) == ["a", "b"]

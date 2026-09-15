@@ -127,12 +127,44 @@ def check_cluster() -> str:
     return run_kubectl(["get", "--raw=/readyz"]).strip()
 
 
-def list_releases() -> list[str]:
-    """Every Helm release name in the context, so something can iterate them."""
-    output = run_helm(
-        ["list", "--kube-context", KUBE_CONTEXT, "--output", "json"]
-    )
-    return [release["name"] for release in json.loads(output)]
+LIST_PAGE = 256
+
+
+def list_releases(page: int = LIST_PAGE) -> list[str]:
+    """Every Helm release name in the context, so something can iterate them.
+
+    Paged, because `helm list` returns at most 256 releases unless told otherwise and
+    says nothing when it stops. A release past the cut would have had no series and no
+    `nf_release_reported` either — the one alert that names unmonitored releases can
+    only name releases it was told exist. Found on day 26 reading `helm list --help`;
+    `--max 0` does not mean "all", it means the server's default.
+
+    Pages are read by offset over helm's alphabetical order, so a release installed or
+    removed between two pages can shift the boundary; names are de-duplicated, and the
+    next scrape lists again from the start.
+    """
+    names: dict[str, None] = {}
+    offset = 0
+    while True:
+        batch = json.loads(
+            run_helm(
+                [
+                    "list",
+                    "--kube-context",
+                    KUBE_CONTEXT,
+                    "--max",
+                    str(page),
+                    "--offset",
+                    str(offset),
+                    "--output",
+                    "json",
+                ]
+            )
+        )
+        names.update((release["name"], None) for release in batch)
+        if len(batch) < page:
+            return list(names)
+        offset += page
 
 
 def deploy(intent: Intent, force_conflicts: bool = False) -> dict[str, Any]:
