@@ -164,7 +164,7 @@ def test_status_endpoint_returns_503_when_cluster_unreachable(
     def unreachable(name: str) -> str:
         raise ClusterUnreachable("Error: Kubernetes cluster unreachable")
 
-    monkeypatch.setattr(reconciler, "helm_release_status", unreachable)
+    monkeypatch.setattr(reconciler, "release_history", unreachable)
     response = client.get("/deployments/sample-nf")
     assert response.status_code == 503
     assert "unreachable" in response.json()["detail"].lower()
@@ -174,7 +174,6 @@ def test_status_endpoint_returns_503_when_cluster_unreachable(
 
 
 def test_status_endpoint_reports_derived_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(reconciler, "helm_release_status", lambda name: "deployed")
     monkeypatch.setattr(
         reconciler, "release_history", lambda name: [{"revision": 1, "status": "deployed"}]
     )
@@ -189,7 +188,6 @@ def test_status_endpoint_reports_derived_state(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_status_endpoint_shows_the_shortfall(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(reconciler, "helm_release_status", lambda name: "deployed")
     monkeypatch.setattr(
         reconciler, "release_history", lambda name: [{"revision": 1, "status": "deployed"}]
     )
@@ -203,7 +201,10 @@ def test_status_endpoint_shows_the_shortfall(monkeypatch: pytest.MonkeyPatch) ->
 def test_status_endpoint_reports_not_instantiated_when_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reconciler, "helm_release_status", lambda name: None)
+    def not_found(name: str) -> str:
+        raise DeployError("Error: release: not found")
+
+    monkeypatch.setattr(reconciler, "release_history", not_found)
     response = client.get("/deployments/ghost")
     assert response.status_code == 200
     assert response.json()["state"] == "NOT_INSTANTIATED"
@@ -328,7 +329,6 @@ def test_status_endpoint_reports_the_operation_beside_the_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The drill-3 case: a failed upgrade over a workload that is still serving."""
-    monkeypatch.setattr(reconciler, "helm_release_status", lambda name: "failed")
     monkeypatch.setattr(
         reconciler, "release_history", lambda name: op((1, "deployed"), (2, "failed"))
     )
@@ -404,3 +404,105 @@ def test_evicted_corpses_with_the_intent_unsatisfied_are_still_a_failure() -> No
 def test_a_live_failure_reason_still_wins_over_a_satisfied_count() -> None:
     pods = ready(1) + [{"phase": "Running", "reason": "CrashLoopBackOff", "ready": True}]
     assert derive_state("deployed", pods, 2) is State.FAILED
+
+
+# --- day 26: fewer calls per release, same answers ---
+
+
+def pod(app: str, phase: str = "Running", ready: bool = True, deleting: bool = False) -> dict:
+    metadata: dict[str, object] = {"labels": {"app": app}}
+    if deleting:
+        metadata["deletionTimestamp"] = "2026-09-15T02:00:00Z"
+    return {
+        "metadata": metadata,
+        "status": {"phase": phase, "containerStatuses": [{"ready": ready, "state": {}}]},
+    }
+
+
+def test_reconcile_reads_the_status_from_history_not_helm_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verbs: list[str] = []
+
+    def fake_run_helm(args: list[str]) -> str:
+        verbs.append(args[0])
+        if args[0] == "history":
+            return json.dumps(op((1, "deployed"), (2, "failed")))
+        if args[0] == "get":
+            return json.dumps({"replicaCount": 1})
+        raise AssertionError(f"reconcile should not call helm {args[0]}")
+
+    monkeypatch.setattr(reconciler, "run_helm", fake_run_helm)
+    monkeypatch.setattr(
+        reconciler, "run_kubectl", lambda args: json.dumps({"items": [pod("sample-nf")]})
+    )
+    result = reconciler.reconcile("sample-nf")
+    assert verbs == ["history", "get"]
+    assert result["helm_status"] == "failed"
+    assert result["state"] == "INSTANTIATED"
+
+
+def test_reconcile_with_pods_given_makes_no_kubectl_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_helm(args: list[str]) -> str:
+        if args[0] == "history":
+            return history((1, "deployed"))
+        return json.dumps({"replicaCount": 2})
+
+    def no_kubectl(args: list[str]) -> str:
+        raise AssertionError("pods were supplied; kubectl must not be called")
+
+    monkeypatch.setattr(reconciler, "run_helm", fake_run_helm)
+    monkeypatch.setattr(reconciler, "run_kubectl", no_kubectl)
+    result = reconciler.reconcile("sample-nf", pods=ready(2))
+    assert (result["state"], result["ready_replicas"]) == ("INSTANTIATED", 2)
+
+
+def test_absent_history_is_none_and_unreachable_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def not_found(args: list[str]) -> str:
+        raise DeployError("Error: release: not found")
+
+    def unreachable(args: list[str]) -> str:
+        raise ClusterUnreachable("Error: Kubernetes cluster unreachable")
+
+    def forbidden(args: list[str]) -> str:
+        raise DeployError("Error: forbidden")
+
+    monkeypatch.setattr(reconciler, "run_helm", not_found)
+    assert reconciler.existing_history("ghost") is None
+    monkeypatch.setattr(reconciler, "run_helm", unreachable)
+    with pytest.raises(ClusterUnreachable):
+        reconciler.existing_history("sample-nf")
+    monkeypatch.setattr(reconciler, "run_helm", forbidden)
+    with pytest.raises(DeployError):
+        reconciler.existing_history("sample-nf")
+
+
+def test_pods_by_release_matches_the_per_release_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grouping one `-l app` listing by label must give each release exactly what
+    `-l app=<name>` gives it, terminating pods excluded the same way."""
+    everything = [
+        pod("a-nf"),
+        pod("a-nf", phase="Pending", ready=False),
+        pod("b-nf", deleting=True),
+        pod("b-nf"),
+    ]
+
+    def fake_kubectl(args: list[str]) -> str:
+        selector = args[args.index("-l") + 1]
+        if selector == "app":
+            items = everything
+        else:
+            items = [p for p in everything if p["metadata"]["labels"]["app"] == selector[4:]]
+        return json.dumps({"items": items})
+
+    monkeypatch.setattr(reconciler, "run_kubectl", fake_kubectl)
+    grouped = reconciler.pods_by_release()
+    for name in ("a-nf", "b-nf"):
+        assert grouped[name] == reconciler.pod_states(name)
+    assert len(grouped["b-nf"]) == 1
