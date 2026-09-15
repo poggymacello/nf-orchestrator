@@ -140,6 +140,25 @@ def release_history(name: str) -> list[dict[str, Any]]:
     return json.loads(output)
 
 
+def existing_history(name: str) -> list[dict[str, Any]] | None:
+    """The release's history, or None only when the release genuinely does not exist.
+
+    Same contract as helm_release_status, and it replaces that call in reconcile: the
+    newest revision's status *is* the release status. Day 26 checked the two against
+    each other on a real cluster in every state it could produce — deployed, failed
+    upgrade, failed first install, pending-install, pending-upgrade, and absent, where
+    both fail with the same "release: not found" — and they agreed every time.
+    """
+    try:
+        return release_history(name)
+    except ClusterUnreachable:
+        raise
+    except DeployError as exc:
+        if RELEASE_NOT_FOUND in str(exc).lower():
+            return None
+        raise
+
+
 def deployed_revision(history: list[dict[str, Any]]) -> int | None:
     """The highest revision that actually reached `deployed`, or None if none did."""
     revisions = [
@@ -225,8 +244,28 @@ def pod_states(name: str) -> list[dict[str, Any]]:
     counting them made a three-replica intent report six pods mid-replacement.
     """
     output = run_kubectl(["get", "pods", "-l", f"app={name}", "--output", "json"])
-    states: list[dict[str, Any]] = []
+    return parse_pods(json.loads(output)["items"])
+
+
+def pods_by_release() -> dict[str, list[dict[str, Any]]]:
+    """Every release's pods from one kubectl call, keyed by the `app` label.
+
+    The per-release call selects `app=<name>`, so grouping one `-l app` listing by
+    that label returns the same pods for every release. One call instead of one per
+    release: on the day-26 host each kubectl call costs ~95ms, 63ms of it process
+    start, so the saving is the call, not the query.
+    """
+    output = run_kubectl(["get", "pods", "-l", "app", "--output", "json"])
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for item in json.loads(output)["items"]:
+        # `-l app` only returns pods that carry the label, so it is always present.
+        grouped.setdefault(item["metadata"]["labels"]["app"], []).append(item)
+    return {app: parse_pods(items) for app, items in grouped.items()}
+
+
+def parse_pods(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    states: list[dict[str, Any]] = []
+    for item in items:
         if item["metadata"].get("deletionTimestamp"):
             continue
         containers = item["status"].get("containerStatuses", [])
@@ -252,9 +291,12 @@ def pod_states(name: str) -> list[dict[str, Any]]:
     return states
 
 
-def reconcile(name: str) -> dict[str, Any]:
-    helm_status = helm_release_status(name)
-    if helm_status is None:
+def reconcile(name: str, pods: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Derive one release's state. `pods` lets a caller that already listed every pod
+    in one call — the metrics collector — pass this release's share instead of paying
+    for another kubectl call."""
+    history = existing_history(name)
+    if not history:
         return {
             "release": name,
             "state": State.NOT_INSTANTIATED.value,
@@ -264,10 +306,11 @@ def reconcile(name: str) -> dict[str, Any]:
             "last_operation": last_operation([]),
             "pods": [],
         }
-    history = release_history(name)
+    helm_status = max(history, key=lambda entry: entry["revision"])["status"]
     operation = last_operation(history)
     desired = desired_replicas(name, history)
-    pods = pod_states(name)
+    if pods is None:
+        pods = pod_states(name)
     state = derive_state(
         helm_status,
         pods,
