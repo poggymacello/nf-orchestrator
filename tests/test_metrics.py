@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -258,3 +260,84 @@ def test_a_failed_pod_listing_falls_back_to_per_release_reads(
     body = metrics.render().decode()
     assert received == {"a-nf": None}
     assert 'nf_release_reported{release="a-nf"} 1.0' in body
+
+
+# --- drill 8: a slow cluster must not leave every release half-read ---
+
+
+def test_a_slow_cluster_does_not_get_every_release_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 8: against an API server that was slow and served a limited number of calls
+    at a time, submitting all thirty releases at once finished none of them inside the
+    budget — every release got a share of a fixed throughput and none got enough. Two at
+    a time finished six. So the first wave is small, and it grows only on evidence that
+    the cluster kept up.
+
+    Asserted on how much work is put in flight, which is the thing this code decides.
+    How many releases then complete belongs to the cluster, and is in the drill's
+    postmortem with real numbers rather than in a test that would race.
+    """
+    import threading
+    import time
+
+    names = [f"nf-{i}" for i in range(30)]
+    in_flight = live = 0
+    peak = 0
+    lock = threading.Lock()
+    monkeypatch.setattr(metrics, "release_names", lambda: names)
+    monkeypatch.setattr(metrics, "SCRAPE_BUDGET", 0.5)
+    monkeypatch.setattr(metrics, "SCRAPE_WORKERS", 16)
+
+    def slow(name: str, pods: object = None) -> dict[str, object]:
+        nonlocal in_flight, live, peak
+        with lock:
+            in_flight += 1
+            live += 1
+            peak = max(peak, live)
+        time.sleep(0.4)                  # one wave costs most of the budget
+        with lock:
+            live -= 1
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "reconcile_release", slow)
+    metrics.render()
+
+    assert peak <= 2, f"{peak} releases were read at once against a slow cluster"
+    assert in_flight == 2, f"{in_flight} releases were started; the budget allowed one wave"
+
+
+def test_no_wave_is_started_that_the_budget_cannot_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    started: list[str] = []
+    monkeypatch.setattr(metrics, "release_names", lambda: [f"nf-{i}" for i in range(20)])
+    monkeypatch.setattr(metrics, "SCRAPE_BUDGET", 0.8)
+    monkeypatch.setattr(metrics, "SCRAPE_WORKERS", 8)
+
+    def slow(name: str, pods: object = None) -> dict[str, object]:
+        started.append(name)
+        time.sleep(0.3)
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "reconcile_release", slow)
+    began = time.monotonic()
+    metrics.render()
+    elapsed = time.monotonic() - began
+    # It stops admitting rather than spending the whole budget on work it cannot finish.
+    assert len(started) < 20
+    assert elapsed < 0.8 + 0.3
+
+
+def test_a_healthy_cluster_still_reports_every_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The waves must grow: fast reconciles mean nothing is left unreported."""
+    names = [f"nf-{i}" for i in range(40)]
+    monkeypatch.setattr(metrics, "release_names", lambda: names)
+    monkeypatch.setattr(metrics, "reconcile_release", lambda name, pods=None: {**SNAPSHOT, "release": name})
+    body = metrics.render().decode()
+    assert len(re.findall(r'^nf_release_reported\{.*\} 1\.0$', body, re.MULTILINE)) == 40
+    assert 'nf_releases_unreported{reason="deadline"} 0.0' in body
