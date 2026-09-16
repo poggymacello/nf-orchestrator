@@ -8,8 +8,11 @@ be healthy — but a release with no lifecycle series has **no alerting at all**
 `NFFailed` cannot fire for it.
 
 Every command here was run during
-[drill 7](../postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md) on 2026-09-14, against
-a throwaway cluster with twenty releases. Steps not exercised there are marked **(not drilled)**.
+[drill 7](../postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md) on 2026-09-14 against a
+throwaway cluster with twenty releases, and during
+[drill 8](../postmortems/2026-09-16-drill-8-a-slow-api-server.md) on 2026-09-16 against the same
+cluster behind a proxy that made the API server slow. Steps not exercised there are marked
+**(not drilled)**.
 
 ## How this incident presents
 
@@ -80,14 +83,19 @@ those releases by hand now**, before changing anything — nothing has been watc
 curl -s localhost:8000/deployments/<release>
 ```
 
-## 4. Give the scrape more concurrency (not drilled beyond 1 and 8)
+## 4. Do not reach for more workers first
 
-`NF_SCRAPE_WORKERS` sets how many releases are reconciled at once. The drill ran 1 (serial, 7 of 20
-unreported) and 8 (the default, 0 unreported). Raising it further was not tried. Each worker is a
-kubectl or helm process against the API server, so on a cluster that is already slow, more workers
-is more load on the thing that is slow.
+`NF_SCRAPE_WORKERS` (default 8) is a **ceiling** on how many releases are read at once, not a target:
+since 2026-09-16 the scrape starts with two and grows the wave only while the cluster keeps up
+([ADR-0015](../../design/adr/0015-admit-scrape-work-in-waves.md)).
 
-Restart the orchestrator with the new value and repeat step 1.
+Raising it helps only when the cluster has capacity to spare and the release count is the problem.
+When the cluster is the problem it makes things worse — drill 8 measured 16 workers reporting **zero**
+of 30 releases against a slow API server where 2 workers reported six. Step 2 tells you which case
+you are in: a scrape pinned at the budget with few releases means slow calls, not too many of them.
+
+If the calls are slow, the fix is on the cluster's side, not here. Check the API server's own health
+and latency before changing any setting in this project.
 
 ## 5. Do not raise the budget past the scrape timeout
 
@@ -103,5 +111,6 @@ existed.
 - **A cache.** The structural fix when concurrency and two calls per release stop being enough —
   [ADR-0014](../../design/adr/0014-the-scrape-has-one-budget.md). Not built. (Reducing calls per
   release, the other one listed there, was built on 2026-09-15.)
-- **An API server slow under real load.** The drill simulated growth and a silent connection, not a
-  busy control plane. **(not drilled)**
+- **An API server saturated by real traffic.** Drill 8 imposed latency and a queue with a proxy,
+  which reproduces the timing but not the causes — etcd contention, a slow admission webhook, or the
+  API server's own priority-and-fairness queues, which shed load rather than queue it indefinitely.
