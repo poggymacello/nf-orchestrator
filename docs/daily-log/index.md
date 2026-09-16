@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-16 | 27 | Make the API server slow, and find yesterday's concurrency starving every release | [2026-09-16](2026-09-16.md) |
 | 2026-09-15 | 26 | Measure what a scrape call costs, halve the calls, and prove old and new agree on a real cluster | [2026-09-15](2026-09-15.md) |
 | 2026-09-14 | 25 | Silence an API server after the handshake, then find twenty healthy releases paging as an outage | [2026-09-14](2026-09-14.md) |
 | 2026-09-13 | 24 | Freeze the control plane, and find the outage alert had no data during the outage | [2026-09-13-2](2026-09-13-2.md) |
