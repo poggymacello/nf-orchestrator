@@ -74,6 +74,65 @@ def snapshot(name: str, pods: list[dict[str, Any]] | None = None) -> dict[str, A
         return None
 
 
+def reconcile_within(
+    names: list[str],
+    pods: dict[str, list[dict[str, Any]]] | None,
+    deadline: float,
+) -> dict[str, Future[dict[str, Any] | None]]:
+    """Reconcile as many releases as the budget allows, in waves that grow while the
+    cluster keeps up.
+
+    Drill 8: against an API server that was slow *and* limited in how much it served at
+    once, throughput was fixed, so every extra worker bought a share of the same total.
+    Sixteen workers left all thirty releases half-read and **none** finished inside the
+    budget; two workers finished six. Submitting every release at once is a bet that the
+    cluster can serve them all, and that bet is lost exactly when monitoring matters.
+
+    So work is admitted a wave at a time: start small, double while a wave completes,
+    and stop admitting once the remaining budget is shorter than the last wave took.
+    Releases never admitted, and those still running at the deadline, are reported as
+    unreported — the same way, for the same reason, as before.
+    """
+    first_wave = min(2, SCRAPE_WORKERS)
+    pool = ThreadPoolExecutor(max_workers=SCRAPE_WORKERS)
+    futures: dict[str, Future[dict[str, Any] | None]] = {}
+    queue = list(names)
+    wave = first_wave
+    previous_cost = 0.0
+    try:
+        while queue:
+            remaining = deadline - time.monotonic()
+            # Do not start work that the last wave's evidence says cannot finish.
+            if remaining <= 0 or (previous_cost and remaining < previous_cost):
+                break
+            batch, queue = queue[:wave], queue[wave:]
+            started = time.monotonic()
+            batch_futures = {
+                name: pool.submit(
+                    snapshot, name, None if pods is None else pods.get(name, [])
+                )
+                for name in batch
+            }
+            futures.update(batch_futures)
+            wait(batch_futures.values(), timeout=max(0.0, deadline - time.monotonic()))
+            previous_cost = time.monotonic() - started
+            if not all(future.done() for future in batch_futures.values()):
+                break
+            wave = min(wave * 2, SCRAPE_WORKERS)
+    finally:
+        # Queued work is dropped; anything already running is itself bounded by the
+        # per-call timeout, so abandoning it cannot leave a subprocess behind for long.
+        pool.shutdown(wait=False, cancel_futures=True)
+    for name in queue:
+        futures.setdefault(name, _never_started())
+    return futures
+
+
+def _never_started() -> Future[dict[str, Any] | None]:
+    """A future for a release the budget never allowed us to start."""
+    return Future()
+
+
 class LifecycleCollector:
     """Reconciles every release at scrape time and emits its state as gauges.
 
@@ -151,15 +210,7 @@ class LifecycleCollector:
         except UNAVAILABLE:
             pods = None
 
-        pool = ThreadPoolExecutor(max_workers=SCRAPE_WORKERS)
-        futures: dict[str, Future[dict[str, Any] | None]] = {
-            name: pool.submit(snapshot, name, None if pods is None else pods.get(name, []))
-            for name in names
-        }
-        wait(futures.values(), timeout=max(0.0, deadline - time.monotonic()))
-        # Queued work is dropped; anything already running is itself bounded by the
-        # per-call timeout, so abandoning it cannot leave a subprocess behind for long.
-        pool.shutdown(wait=False, cancel_futures=True)
+        futures = reconcile_within(names, pods, deadline)
 
         late = errored = 0
         for name, future in futures.items():
