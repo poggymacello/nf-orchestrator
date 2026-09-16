@@ -57,7 +57,10 @@ cluster during that scrape. ADR-0005 and ADR-0007 both still hold.
 - **Good:** an NF with no alerting coverage is itself alerted on, by name.
 - **Cost:** up to eight kubectl and helm processes at once. On a healthy API server that is nothing;
   on one that is already struggling it is eight times the read load of the serial version, arriving
-  exactly when it hurts. Not drilled.
+  exactly when it hurts. ~~Not drilled.~~ **Drilled 2026-09-16** and worse than this line guessed:
+  under load the extra readers did not just add load, they starved each other, and sixteen of them
+  reported *nothing at all*. Superseded by [ADR-0015](0015-admit-scrape-work-in-waves.md), which
+  makes the worker count a ceiling and admits work in waves.
 - **Cost:** a release on the deadline boundary is reported on some scrapes and not others, so no
   window-based alert holds for it, including `NFReleaseUnreported`. It shows in the count. Accepted
   (drill 7, finding 4).
