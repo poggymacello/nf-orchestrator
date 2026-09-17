@@ -102,3 +102,20 @@ groups:
             budget (too many releases or a slow API server) and will keep skipping the
             same releases; reason="error" means reading this release failed. Follow
             runbooks/scrape-over-budget.md.
+
+      # Drill 9: the API server shed the orchestrator's requests with 429 while answering
+      # /readyz instantly. Before this, that read as ClusterUnreachable — a page that sends
+      # someone to restart a control plane that is up. It is a different incident: the
+      # cluster is there, and this client is being throttled or the server is overloaded.
+      - alert: ClusterThrottlingOrchestrator
+        expr: nf_cluster_busy == 1
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "The API server is reachable but not serving the orchestrator"
+          description: >-
+            Lifecycle series are partly or wholly missing because the orchestrator's
+            requests are being throttled or the API server is overloaded, not because it
+            is down. Check API Priority and Fairness for the orchestrator's identity
+            before restarting anything — follow runbooks/cluster-throttling.md.
