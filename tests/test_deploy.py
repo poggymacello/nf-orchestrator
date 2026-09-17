@@ -277,3 +277,94 @@ def test_a_release_seen_on_two_pages_is_listed_once(monkeypatch: pytest.MonkeyPa
     pages = iter([[{"name": "a"}, {"name": "b"}], [{"name": "b"}]])
     monkeypatch.setattr(deploy_engine, "run_helm", lambda args: json.dumps(next(pages)))
     assert deploy_engine.list_releases(page=2) == ["a", "b"]
+
+
+# --- drill 9: a throttled cluster is not an unreachable one ---
+
+
+def timeout_then(probe_answers: bool, calls: list[list[str]]):
+    """subprocess.run that times out the real call and answers the readiness probe."""
+    import subprocess
+
+    class Done:
+        returncode = 0 if probe_answers else 1
+        stdout = "ok"
+        stderr = ""
+
+    def fake(command: list[str], *args: object, **kwargs: object) -> object:
+        calls.append(command)
+        if "--raw=/readyz" in command:
+            return Done()
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+
+    return fake
+
+
+def test_a_timeout_on_a_reachable_server_is_busy_not_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", timeout_then(True, calls))
+    with pytest.raises(deploy_engine.ClusterBusy, match="reachable and not serving"):
+        deploy_engine.run_helm(["history", "sample-nf"])
+    assert calls[-1][-1] == "--raw=/readyz"
+
+
+def test_a_timeout_with_no_readiness_answer_stays_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drills 6 and 7: a frozen or stalled server fails the probe too."""
+    import subprocess
+
+    def hang(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(deploy_engine.ClusterUnreachable):
+        deploy_engine.run_kubectl(["get", "pods"])
+    with pytest.raises(deploy_engine.ClusterUnreachable):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_a_timed_out_readiness_check_does_not_probe_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    calls: list[list[str]] = []
+
+    def hang(command: list[str], *args: object, **kwargs: object) -> object:
+        calls.append(command)
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(deploy_engine.ClusterUnreachable):
+        deploy_engine.check_cluster()
+    assert len(calls) == 1
+
+
+def test_client_go_throttling_text_is_busy() -> None:
+    message = (
+        "Error from server (TooManyRequests): the server has received too many "
+        "requests and has asked us to try again later"
+    )
+    assert isinstance(deploy_engine.classify_error(message), deploy_engine.ClusterBusy)
+
+
+def test_a_busy_cluster_is_503_with_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    def busy(args: list[str]) -> str:
+        raise deploy_engine.ClusterBusy("helm upgrade did not answer, API server is up")
+
+    monkeypatch.setattr(deploy_engine, "run_helm", busy)
+    response = client.post("/deployments", json=VALID)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert "API server is up" in response.json()["detail"]
+
+
+def test_the_probe_fits_inside_the_scrape_budget() -> None:
+    from orchestrator import metrics
+
+    assert deploy_engine.READ_TIMEOUT + deploy_engine.PROBE_TIMEOUT <= metrics.SCRAPE_BUDGET
