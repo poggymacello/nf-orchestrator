@@ -18,8 +18,18 @@ class TranslationRequest(BaseModel):
     text: str
 
 
+BUSY_RETRY_AFTER = "5"
+
+
 def http_error(exc: deploy_engine.DeployError) -> HTTPException:
-    """503 unreachable, 409 a field-ownership conflict, 502 any other refusal."""
+    """503 unreachable or busy, 409 a field-ownership conflict, 502 any other refusal."""
+    if isinstance(exc, deploy_engine.ClusterBusy):
+        # Still 503 — the orchestrator cannot answer right now — but with Retry-After,
+        # because unlike an outage this one is expected to clear on its own. Not 502:
+        # that means the cluster refused the operation, and a caller would not retry it.
+        return HTTPException(
+            status_code=503, detail=str(exc), headers={"Retry-After": BUSY_RETRY_AFTER}
+        )
     if isinstance(exc, deploy_engine.ClusterUnreachable):
         return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, deploy_engine.ClusterConflict):

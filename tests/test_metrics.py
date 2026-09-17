@@ -341,3 +341,43 @@ def test_a_healthy_cluster_still_reports_every_release(
     body = metrics.render().decode()
     assert len(re.findall(r'^nf_release_reported\{.*\} 1\.0$', body, re.MULTILINE)) == 40
     assert 'nf_releases_unreported{reason="deadline"} 0.0' in body
+
+
+# --- drill 9: throttled is its own answer ---
+
+
+def test_a_throttled_listing_is_reachable_and_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    def throttled() -> list[str]:
+        raise deploy_engine.ClusterBusy("helm list did not answer; API server is up")
+
+    monkeypatch.setattr(metrics, "release_names", throttled)
+    assert gauge("nf_cluster_reachable", {}) == 1.0
+    assert gauge("nf_cluster_busy", {}) == 1.0
+    assert gauge("nf_deployment_state", {"release": "sample-nf", "state": "FAILED"}) is None
+
+
+def test_an_unreachable_cluster_is_not_reported_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert gauge("nf_cluster_reachable", {}) == 0.0
+    assert gauge("nf_cluster_busy", {}) is None
+
+
+def test_a_throttled_release_is_counted_as_busy_not_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reconcile(name: str, pods: object = None) -> dict[str, object]:
+        if name == "throttled-nf":
+            raise deploy_engine.ClusterBusy("history did not answer; API server is up")
+        return {**SNAPSHOT, "release": name}
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["throttled-nf", "sample-nf"])
+    monkeypatch.setattr(metrics, "reconcile_release", reconcile)
+    assert gauge("nf_releases_unreported", {"reason": "busy"}) == 1.0
+    assert gauge("nf_releases_unreported", {"reason": "error"}) == 0.0
+    assert gauge("nf_cluster_busy", {}) == 1.0
+    assert gauge("nf_release_reported", {"release": "sample-nf"}) == 1.0
+
+
+def test_a_healthy_scrape_is_not_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(metrics, "reconcile_release", lambda name, pods=None: SNAPSHOT)
+    assert gauge("nf_cluster_busy", {}) == 0.0
