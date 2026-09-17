@@ -44,6 +44,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | 6 | A frozen control plane | 2026-09-13 | 3 findings — cluster calls were bounded only by Go's 10s TLS handshake default, twice Prometheus's scrape timeout, so the `ClusterUnreachable` alert had **no data** during the outage it exists for; and no rule covered a failed scrape. All fixed, and both alerts seen firing | [drill-6](postmortems/2026-09-13-drill-6-frozen-control-plane.md) |
 | 7 | A stalled API server, and a scrape that outgrew its budget | 2026-09-14 | 4 findings — drill 6's bound held against a post-handshake stall, but it was per call: twenty **healthy** releases took the scrape to 8.4s and `OrchestratorScrapeFailing` paged for an orchestrator that was up; and past a deadline the same releases went unreported every time, with nothing naming them. 1-3 fixed, 4 accepted | [drill-7](postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md) |
 | 8 | An API server that is slow, not silent | 2026-09-16 | 3 findings — the scrape budget held, but day 25's concurrency **made things worse** under load: against a slow, queue-limited API server, 16 workers left all 30 releases half-read and **none** reported, while 2 workers reported six. 1 fixed by admitting work in waves, 2 and 3 accepted | [drill-8](postmortems/2026-09-16-drill-8-a-slow-api-server.md) |
+| 9 | The API server sheds load | 2026-09-17 | 3 findings — under real API Priority and Fairness shedding (429, `Retry-After` up to 32s, `/readyz` still instant) every call was reported as **unreachable**, the page for a dead control plane; and the orchestrator's own concurrency throttled itself against a 3-seat allowance. 1 and 2 fixed, 3 accepted with a verified setting | [drill-9](postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md) |
 | — | Node disk full | — | Abandoned on 2026-08-20 and superseded by drill 5, which turned eviction back on and calibrated the threshold to the host's free space instead of filling 760 GiB to reach a conventional one | — |
 
 ## Runbooks
@@ -53,6 +54,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | [Deployment not reaching INSTANTIATED](runbooks/deployment-not-reaching-instantiated.md) | A deployment is stuck in `INSTANTIATING`, flapping, or reporting `INSTANTIATED` you do not believe |
 | [Control plane unreachable](runbooks/control-plane-unreachable.md) | Requests that need the cluster return `503`, or `/readyz` is failing |
 | [Node under disk pressure](runbooks/node-under-disk-pressure.md) | A deployment reads `FAILED` with pods showing `reason: Evicted`, or the node reports `DiskPressure=True` |
+| [Cluster throttling the orchestrator](runbooks/cluster-throttling.md) | `ClusterThrottlingOrchestrator` is firing, or a `503` carries `Retry-After` and says the API server is reachable |
 | [Scrape over budget](runbooks/scrape-over-budget.md) | `NFReleaseUnreported` is firing, or `nf_releases_unreported` is above zero |
 
 ## Severity
@@ -64,18 +66,21 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-All eight drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
+All nine drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
 they found is now fixed, across ADRs [0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md),
 [0007](../design/adr/0007-stability-is-an-alerting-concern.md),
 [0008](../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md) and
 [0009](../design/adr/0009-the-operation-is-not-the-network-function.md) for drills 1-3, in the
 translator for drill 4, in the reconciler's derivation for drill 5, in the subprocess bounds and
 alert rules for drill 6, in the scrape budget of
-[ADR-0014](../design/adr/0014-the-scrape-has-one-budget.md) for drill 7, and in the wave admission of
-[ADR-0015](../design/adr/0015-admit-scrape-work-in-waves.md) for drill 8. Each drill's action-item
+[ADR-0014](../design/adr/0014-the-scrape-has-one-budget.md) for drill 7, in the wave admission of
+[ADR-0015](../design/adr/0015-admit-scrape-work-in-waves.md) for drill 8, and in the busy
+classification of [ADR-0016](../design/adr/0016-busy-is-not-unreachable.md) for drill 9. Each drill's action-item
 table says which change closed which finding.
 
-Four items stay open and none is a defect. Drill 8's findings 2 and 3 are one item: under sustained
+Five items stay open and none is a defect. Drill 9's finding 3: a scrape concurrency ceiling above
+the orchestrator's APF allowance throttles it by itself, so the ceiling is a setting to match to the
+cluster, verified in the drill and written into the runbook. Drill 8's findings 2 and 3 are one item: under sustained
 overload most releases stay unreported, which the per-release alert reports truthfully, and the
 concurrency that suits a cluster is measured per scrape rather than configured. Drill 7's finding 4: a release on the scrape deadline's
 boundary is reported on some scrapes and not others, so no alert window holds for it; it still shows
