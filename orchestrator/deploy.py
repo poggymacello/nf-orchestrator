@@ -36,6 +36,18 @@ UNREACHABLE_MARKERS = (
     "i/o timeout",
 )
 
+# The API server answered and said "not now". client-go normally retries these silently
+# (drill 9 saw `Retry-After: 32`), so the text only surfaces once its retries run out.
+BUSY_MARKERS = (
+    "too many requests",
+    "has asked us to try again later",
+)
+
+# How long the readiness probe after a timed-out call may take. It must fit, together with
+# the read timeout, inside the scrape budget — a test pins that.
+PROBE_TIMEOUT = float(os.environ.get("NF_PROBE_TIMEOUT", "0.75"))
+READYZ = ["get", "--raw=/readyz"]
+
 # Server-side apply refusing to take a field from another manager. The wording comes
 # from the M4 drill-3 conflict, where `kubectl scale` owned `.spec.replicas`.
 CONFLICT_MARKERS = (
@@ -56,6 +68,16 @@ class ClusterUnreachable(DeployError):
     """
 
 
+class ClusterBusy(DeployError):
+    """The API server is up but is not serving this client: throttled or overloaded.
+
+    Not ClusterUnreachable, which says nothing can be known — the cluster can be reached
+    and is choosing not to answer yet. Drill 9 saw API Priority and Fairness reject the
+    orchestrator's service account with 429 and `Retry-After` up to 32s while `/readyz`
+    answered instantly, and every one of those was reported as "unreachable".
+    """
+
+
 class ClusterConflict(DeployError):
     """Another field manager owns a field this apply would change.
 
@@ -68,6 +90,8 @@ class ClusterConflict(DeployError):
 
 def classify_error(message: str) -> DeployError:
     lowered = message.lower()
+    if any(marker in lowered for marker in BUSY_MARKERS):
+        return ClusterBusy(message)
     if any(marker in lowered for marker in UNREACHABLE_MARKERS):
         return ClusterUnreachable(message)
     if any(marker in lowered for marker in CONFLICT_MARKERS):
@@ -102,10 +126,39 @@ def run_bounded(command: list[str], args: list[str], timeout: float) -> str:
         )
     except subprocess.TimeoutExpired as exc:
         verb = " ".join([command[0], *args[:1]])
+        if args != READYZ and api_server_answers():
+            raise ClusterBusy(
+                f"{verb} did not answer within {timeout:g}s, but the API server answers "
+                "its readiness probe: it is reachable and not serving this client "
+                "(throttled or overloaded)"
+            ) from exc
         raise ClusterUnreachable(f"{verb} did not answer within {timeout:g}s") from exc
     if result.returncode != 0:
         raise classify_error(result.stderr.strip() or result.stdout.strip())
     return result.stdout
+
+
+def api_server_answers() -> bool:
+    """Whether the API server answers `/readyz` quickly, asked after a call timed out.
+
+    A timeout alone cannot tell a server that is gone from one that is refusing this
+    client. Kubernetes serves probe endpoints outside the flow-control levels that
+    throttle ordinary requests, so during drill 9's load shedding `/readyz` answered in
+    ~0.2s while every list and helm call waited on `Retry-After`. When the server is
+    frozen or stalled (drills 6 and 7) the probe times out too, and the answer stays
+    "unreachable".
+    """
+    try:
+        result = subprocess.run(
+            ["kubectl", "--context", KUBE_CONTEXT, *READYZ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROBE_TIMEOUT,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
 
 
 def timeout_for(args: list[str]) -> float:
@@ -124,7 +177,7 @@ def run_kubectl(args: list[str]) -> str:
 
 def check_cluster() -> str:
     """Raise ClusterUnreachable unless the API server answers its own readyz probe."""
-    return run_kubectl(["get", "--raw=/readyz"]).strip()
+    return run_kubectl(READYZ).strip()
 
 
 LIST_PAGE = 256

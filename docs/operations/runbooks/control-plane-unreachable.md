@@ -41,7 +41,11 @@ cannot scrape the orchestrator at all — and while it fires, `ClusterUnreachabl
 because its series is stale, so an alert clearing is not evidence of recovery.
 
 If `NFReleaseUnreported` is firing instead, the cluster is reachable and the scrape is short of
-time — that is [scrape over budget](scrape-over-budget.md), not this runbook.
+time — that is [scrape over budget](scrape-over-budget.md), not this runbook. If a `503` carries a
+`Retry-After` header and says the API server is *reachable and not serving this client*, or
+`ClusterThrottlingOrchestrator` is firing, the cluster is up and throttling the orchestrator — that is
+[cluster throttling](cluster-throttling.md). Before 2026-09-17 that case was reported here, as
+"did not answer within 3s" ([drill 9](../postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md)).
 
 > **Before 2026-08-21** this endpoint returned HTTP 200 with
 > `{"state":"NOT_INSTANTIATED","helm_status":null,"pods":[]}` during an outage, identical to a

@@ -37,6 +37,8 @@ a single series in six minutes. Do not wait for them to "come round".
 ## 1. Which reason?
 
 - `reason="deadline"` — the scrape ran out of time. Continue with step 2.
+- `reason="busy"` — the API server was reachable and not serving the orchestrator. Go to
+  [cluster throttling](cluster-throttling.md).
 - `reason="error"` — reading that release failed while the others succeeded. The drill produced no
   errors, so this branch is covered by a unit test only **(not drilled)**. Read the release directly
   and the error comes back in the response:
@@ -112,5 +114,6 @@ existed.
   [ADR-0014](../../design/adr/0014-the-scrape-has-one-budget.md). Not built. (Reducing calls per
   release, the other one listed there, was built on 2026-09-15.)
 - **An API server saturated by real traffic.** Drill 8 imposed latency and a queue with a proxy,
-  which reproduces the timing but not the causes — etcd contention, a slow admission webhook, or the
-  API server's own priority-and-fairness queues, which shed load rather than queue it indefinitely.
+  which reproduces the timing but not the causes — etcd contention or a slow admission webhook. The
+  API server's own load shedding was drilled separately and has its own runbook:
+  [cluster throttling](cluster-throttling.md).

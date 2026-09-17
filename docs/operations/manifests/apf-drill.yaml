@@ -1,0 +1,46 @@
+# Drill 9's API Priority and Fairness setup, as applied to a throwaway kind cluster.
+#
+# The orchestrator runs as its own service account, because kind's admin identity is in
+# system:masters and APF exempts that group entirely. The priority level is deliberately
+# tiny — 3 seats, no borrowing, excess rejected with 429 — so that shedding is easy to
+# reproduce. Do not apply this to a cluster anyone depends on.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: nf-orchestrator, namespace: default}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: nf-orchestrator-read, namespace: default}
+rules:
+- apiGroups: [""]
+  resources: [pods, secrets]
+  verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: nf-orchestrator-read, namespace: default}
+subjects: [{kind: ServiceAccount, name: nf-orchestrator, namespace: default}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: nf-orchestrator-read}
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata: {name: nf-drill-tight}
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 1
+    lendablePercent: 0
+    borrowingLimitPercent: 0
+    limitResponse: {type: Reject}
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata: {name: nf-orchestrator}
+spec:
+  matchingPrecedence: 500
+  priorityLevelConfiguration: {name: nf-drill-tight}
+  distinguisherMethod: {type: ByUser}
+  rules:
+  - subjects: [{kind: ServiceAccount, serviceAccount: {name: nf-orchestrator, namespace: default}}]
+    resourceRules: [{verbs: ["*"], apiGroups: ["*"], resources: ["*"], namespaces: ["*"], clusterScope: true}]
+    nonResourceRules: [{verbs: ["*"], nonResourceURLs: ["*"]}]

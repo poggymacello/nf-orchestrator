@@ -8,7 +8,7 @@ from prometheus_client import CollectorRegistry, Counter, generate_latest
 from prometheus_client.core import GaugeMetricFamily
 
 from orchestrator import reconciler
-from orchestrator.deploy import DeployError, list_releases
+from orchestrator.deploy import ClusterBusy, DeployError, list_releases
 from orchestrator.reconciler import OperationState, State
 
 REGISTRY = CollectorRegistry()
@@ -66,10 +66,18 @@ def reconcile_release(
     return reconciler.reconcile(name, pods)
 
 
-def snapshot(name: str, pods: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
-    """Reconcile one release, or None if it cannot be read this scrape."""
+# What a scrape learned about one release: its reconciled state, BUSY when the API server
+# was reachable but not serving us (drill 9), or None when reading it failed otherwise.
+BUSY = "busy"
+Snapshot = dict[str, Any] | str | None
+
+
+def snapshot(name: str, pods: list[dict[str, Any]] | None = None) -> Snapshot:
+    """Reconcile one release, or say why it could not be read this scrape."""
     try:
         return reconcile_release(name, pods)
+    except ClusterBusy:
+        return BUSY
     except UNAVAILABLE:
         return None
 
@@ -78,7 +86,7 @@ def reconcile_within(
     names: list[str],
     pods: dict[str, list[dict[str, Any]]] | None,
     deadline: float,
-) -> dict[str, Future[dict[str, Any] | None]]:
+) -> dict[str, Future[Snapshot]]:
     """Reconcile as many releases as the budget allows, in waves that grow while the
     cluster keeps up.
 
@@ -95,7 +103,7 @@ def reconcile_within(
     """
     first_wave = min(2, SCRAPE_WORKERS)
     pool = ThreadPoolExecutor(max_workers=SCRAPE_WORKERS)
-    futures: dict[str, Future[dict[str, Any] | None]] = {}
+    futures: dict[str, Future[Snapshot]] = {}
     queue = list(names)
     wave = first_wave
     previous_cost = 0.0
@@ -128,7 +136,7 @@ def reconcile_within(
     return futures
 
 
-def _never_started() -> Future[dict[str, Any] | None]:
+def _never_started() -> Future[Snapshot]:
     """A future for a release the budget never allowed us to start."""
     return Future()
 
@@ -177,8 +185,23 @@ class LifecycleCollector:
             labels=["release", "state"],
         )
 
+        busy = GaugeMetricFamily(
+            "nf_cluster_busy",
+            "1 when the API server was reachable but did not serve the orchestrator this "
+            "scrape (throttled or overloaded)",
+        )
+
         try:
             names = release_names()
+        except ClusterBusy:
+            # Reachable, and refusing us. Not the drill-2 case — the cluster is there — but
+            # no release could be listed either, so no release series: nf_cluster_busy is
+            # what says why they are missing.
+            reachable.add_metric([], 1.0)
+            busy.add_metric([], 1.0)
+            yield reachable
+            yield busy
+            return
         except UNAVAILABLE:
             # No cluster, no answer. Report that plainly and emit no release series
             # at all: a scrape that cannot see the cluster must not be indistinguish-
@@ -205,21 +228,28 @@ class LifecycleCollector:
         # Every release's pods in one call. If that call fails, each reconcile falls back
         # to reading its own pods, so a failure lands in the per-release accounting below
         # instead of needing a path of its own.
+        throttled = False
         try:
             pods: dict[str, list[dict[str, Any]]] | None = release_pods()
+        except ClusterBusy:
+            pods, throttled = None, True
         except UNAVAILABLE:
             pods = None
 
         futures = reconcile_within(names, pods, deadline)
 
-        late = errored = 0
+        late = errored = refused = 0
         for name, future in futures.items():
             if not future.done() or future.cancelled():
                 late += 1
                 reported.add_metric([name], 0.0)
                 continue
             current = future.result()
-            if current is None:
+            if current is BUSY:
+                refused += 1
+                reported.add_metric([name], 0.0)
+                continue
+            if not isinstance(current, dict):
                 errored += 1
                 reported.add_metric([name], 0.0)
                 continue
@@ -239,8 +269,11 @@ class LifecycleCollector:
 
         unreported.add_metric(["deadline"], float(late))
         unreported.add_metric(["error"], float(errored))
+        unreported.add_metric(["busy"], float(refused))
+        busy.add_metric([], 1.0 if throttled or refused else 0.0)
 
         yield reachable
+        yield busy
         yield unreported
         yield reported
         yield state
