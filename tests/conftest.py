@@ -26,19 +26,32 @@ def unit_tests_never_reach_a_cluster(
 
     Tests that replace `subprocess.run` themselves override this, which is what they
     are asking for. End-to-end tests are exempt: reaching the cluster is their job.
+
+    Day 29: raising was not enough on its own. The scrape now measures the readiness
+    probe on a thread of its own, and an exception raised there is a warning in the test
+    output rather than a failure — the guard was reporting a breach nobody had to read.
+    Breaches are collected and the test fails on them afterwards, on its own thread.
     """
     if "e2e" in Path(str(request.node.fspath)).parts:
         yield
         return
     real_run = subprocess.run
+    breaches: list[str] = []
 
     def guarded(command: object, *args: object, **kwargs: object) -> object:
         if isinstance(command, list | tuple) and command and command[0] in CLUSTER_TOOLS:
+            reached = " ".join(map(str, command[:4]))
+            breaches.append(reached)
             raise AssertionError(
-                f"unit test {request.node.name} ran `{' '.join(map(str, command[:4]))}` "
+                f"unit test {request.node.name} ran `{reached}` "
                 "for real — fake the function the code under test actually calls"
             )
         return real_run(command, *args, **kwargs)  # type: ignore[call-overload]
 
     monkeypatch.setattr(subprocess, "run", guarded)
     yield
+    assert not breaches, (
+        f"unit test {request.node.name} reached the cluster: {breaches} — "
+        "fake the function the code under test actually calls"
+    )
+
