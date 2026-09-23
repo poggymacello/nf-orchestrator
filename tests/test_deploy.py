@@ -368,3 +368,134 @@ def test_the_probe_fits_inside_the_scrape_budget() -> None:
     from orchestrator import metrics
 
     assert deploy_engine.READ_TIMEOUT + deploy_engine.PROBE_TIMEOUT <= metrics.SCRAPE_BUDGET
+
+
+# --- drill 10: a queueing API server is slow, not silent and not refusing ---
+
+
+def test_a_timeout_after_a_recent_answer_is_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe is too slow to answer, and other calls are still completing.
+
+    Drill 10 measured `/readyz` at up to 3.58s under queued back-pressure while helm
+    calls were finishing in under a second. Reading the silent probe as "gone" put
+    nf_cluster_reachable at 0 for a cluster that had just answered.
+    """
+    import subprocess
+
+    class Done:
+        returncode = 0
+        stdout = "deployed"
+        stderr = ""
+
+    def nothing_answers_in_time(
+        command: list[str], *args: object, **kwargs: object
+    ) -> object:
+        """Including the probe, which under queueing is just another slow call."""
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+    deploy_engine.run_helm(["history", "sample-nf"])  # the cluster answers us
+
+    monkeypatch.setattr(subprocess, "run", nothing_answers_in_time)
+    with pytest.raises(deploy_engine.ClusterBusy, match="answered another call moments"):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_an_old_answer_is_not_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evidence expires. A cluster that answered an hour ago proves nothing now."""
+    import subprocess
+
+    deploy_engine.note_success()
+    monkeypatch.setattr(
+        deploy_engine, "answered_recently", lambda *a, **k: False
+    )
+
+    def hang(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(deploy_engine.ClusterUnreachable):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_a_refusal_still_counts_as_the_cluster_answering() -> None:
+    """A conflict is a fact the cluster stated, so it is evidence the cluster is there."""
+    import subprocess
+
+    class Refused:
+        returncode = 1
+        stdout = ""
+        stderr = "Apply failed with 1 conflict: conflict occurred while applying"
+
+    real_run = subprocess.run
+    try:
+        subprocess.run = lambda *a, **k: Refused()  # type: ignore[assignment]
+        with pytest.raises(deploy_engine.ClusterConflict):
+            deploy_engine.run_helm(["upgrade", "sample-nf"])
+    finally:
+        subprocess.run = real_run  # type: ignore[assignment]
+    assert deploy_engine.answered_recently()
+
+
+def test_an_unreachable_answer_is_not_evidence_of_reachability() -> None:
+    import subprocess
+
+    class Gone:
+        returncode = 1
+        stdout = ""
+        stderr = "Kubernetes cluster unreachable: connection refused"
+
+    real_run = subprocess.run
+    try:
+        subprocess.run = lambda *a, **k: Gone()  # type: ignore[assignment]
+        with pytest.raises(deploy_engine.ClusterUnreachable):
+            deploy_engine.run_helm(["history", "sample-nf"])
+    finally:
+        subprocess.run = real_run  # type: ignore[assignment]
+    assert not deploy_engine.answered_recently()
+
+
+def test_calls_that_time_out_together_probe_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 10: one probe per timed-out call is a burst aimed at a struggling server."""
+    import subprocess
+    import threading
+
+    probes: list[list[str]] = []
+    lock = threading.Lock()
+
+    class Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake(command: list[str], *args: object, **kwargs: object) -> object:
+        if "--raw=/readyz" in command:
+            with lock:
+                probes.append(command)
+            return Done()
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake)
+
+    def stalled_call() -> None:
+        with pytest.raises(deploy_engine.ClusterBusy):
+            deploy_engine.run_helm(["history", "sample-nf"])
+
+    threads = [threading.Thread(target=stalled_call) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(probes) == 1
+
+
+def test_a_probe_that_does_not_answer_counts_as_slow() -> None:
+    assert deploy_engine.Probe(answered=False, seconds=0.01).slow
+    assert deploy_engine.Probe(
+        answered=True, seconds=deploy_engine.SLOW_PROBE + 0.01
+    ).slow
+    assert not deploy_engine.Probe(answered=True, seconds=0.05).slow
