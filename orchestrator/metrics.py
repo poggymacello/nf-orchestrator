@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -8,7 +9,14 @@ from prometheus_client import CollectorRegistry, Counter, generate_latest
 from prometheus_client.core import GaugeMetricFamily
 
 from orchestrator import reconciler
-from orchestrator.deploy import ClusterBusy, DeployError, list_releases
+from orchestrator.deploy import (
+    PROBE_TIMEOUT,
+    ClusterBusy,
+    DeployError,
+    Probe,
+    api_server_probe,
+    list_releases,
+)
 from orchestrator.reconciler import OperationState, State
 
 REGISTRY = CollectorRegistry()
@@ -160,6 +168,14 @@ class LifecycleCollector:
 
     def collect(self) -> Iterator[GaugeMetricFamily]:
         deadline = time.monotonic() + SCRAPE_BUDGET
+        # Timed alongside the scrape, not in front of it, so measuring costs the scrape
+        # nothing; the answer is also what any call that times out during this scrape
+        # will reuse instead of probing again.
+        measured: list[Probe] = []
+        prober = threading.Thread(
+            target=lambda: measured.append(api_server_probe(max_age=0.0)), daemon=True
+        )
+        prober.start()
         reachable = GaugeMetricFamily(
             "nf_cluster_reachable",
             "1 when the orchestrator could reach the cluster during this scrape",
@@ -189,6 +205,10 @@ class LifecycleCollector:
             "nf_cluster_busy",
             "1 when the API server was reachable but did not serve the orchestrator this "
             "scrape (throttled or overloaded)",
+        )
+        probe_seconds = GaugeMetricFamily(
+            "nf_cluster_probe_seconds",
+            "How long the API server took to answer its readiness probe this scrape",
         )
 
         try:
@@ -270,10 +290,27 @@ class LifecycleCollector:
         unreported.add_metric(["deadline"], float(late))
         unreported.add_metric(["error"], float(errored))
         unreported.add_metric(["busy"], float(refused))
-        busy.add_metric([], 1.0 if throttled or refused else 0.0)
+
+        # Drill 10: under queueing nothing fails. Calls just take longer than the budget,
+        # every release goes unreported for reason="deadline", and a count of late
+        # releases reads as "the orchestrator is short of time" — drill 7's incident,
+        # whose runbook fixes nothing here. The probe is the one call whose duration means
+        # something on its own, so a slow probe is what says the cause is the cluster.
+        # The probe is bounded on its own, so waiting for it here cannot outlast that
+        # bound even when the scrape has already spent its budget.
+        prober.join(timeout=PROBE_TIMEOUT)
+        probe = measured[0] if measured else None
+        if probe is not None:
+            probe_seconds.add_metric([], probe.seconds)
+        # A probe still missing after a whole scrape plus its own bound was not served
+        # promptly either, whatever it eventually says.
+        busy.add_metric(
+            [], 1.0 if throttled or refused or probe is None or probe.slow else 0.0
+        )
 
         yield reachable
         yield busy
+        yield probe_seconds
         yield unreported
         yield reported
         yield state

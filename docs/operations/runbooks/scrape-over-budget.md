@@ -36,7 +36,12 @@ a single series in six minutes. Do not wait for them to "come round".
 
 ## 1. Which reason?
 
-- `reason="deadline"` — the scrape ran out of time. Continue with step 2.
+- `reason="deadline"` — the scrape ran out of time. **Check `nf_cluster_busy` before going on.**
+  If it is 1, the cluster is holding the orchestrator's requests and the deadline is a symptom, not
+  the cause — go to [cluster throttling](cluster-throttling.md). Drill 10 saw every release miss the
+  deadline with nothing failing, because APF was queueing rather than rejecting; before 2026-09-23
+  that incident arrived here, where none of the steps below would have helped. Otherwise continue
+  with step 2.
 - `reason="busy"` — the API server was reachable and not serving the orchestrator. Go to
   [cluster throttling](cluster-throttling.md).
 - `reason="error"` — reading that release failed while the others succeeded. The drill produced no

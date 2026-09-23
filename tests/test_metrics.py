@@ -20,6 +20,12 @@ def no_cluster_during_scrape(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(metrics, "release_names", unreachable)
     monkeypatch.setattr(metrics, "release_pods", dict)
+    # The scrape measures the readiness probe itself now; no test asks for a real one.
+    monkeypatch.setattr(
+        metrics,
+        "api_server_probe",
+        lambda **kwargs: deploy_engine.Probe(answered=True, seconds=0.05),
+    )
 
 
 def counter_value(result: str, environment: str) -> float:
@@ -381,3 +387,101 @@ def test_a_healthy_scrape_is_not_busy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
     monkeypatch.setattr(metrics, "reconcile_release", lambda name, pods=None: SNAPSHOT)
     assert gauge("nf_cluster_busy", {}) == 0.0
+
+
+# --- drill 10: queued back-pressure fails nothing, so nothing said it was happening ---
+
+
+def fast_probe(seconds: float = 0.05) -> object:
+    return lambda **kwargs: deploy_engine.Probe(answered=True, seconds=seconds)
+
+
+def test_a_slow_probe_reports_the_cluster_as_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every release readable, every call successful, and the cluster still throttling us.
+
+    Under APF queueing nothing is refused and nothing times out — calls simply take
+    longer. Before this, `nf_cluster_busy` stayed 0 and the late releases showed up as
+    reason="deadline", which is the orchestrator's own over-budget incident (drill 7) and
+    sends whoever is paged to the wrong runbook.
+    """
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    monkeypatch.setattr(
+        metrics,
+        "api_server_probe",
+        lambda **kwargs: deploy_engine.Probe(
+            answered=True, seconds=deploy_engine.SLOW_PROBE + 0.5
+        ),
+    )
+    body = client.get("/metrics").text
+    assert "nf_cluster_reachable 1.0" in body
+    assert "nf_cluster_busy 1.0" in body
+    assert 'nf_release_reported{release="sample-nf"} 1.0' in body
+
+
+def test_a_prompt_probe_leaves_the_cluster_unthrottled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    monkeypatch.setattr(metrics, "api_server_probe", fast_probe())
+    body = client.get("/metrics").text
+    assert "nf_cluster_busy 0.0" in body
+
+
+def test_the_probe_duration_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The number the busy decision is made from, so nobody has to take it on trust."""
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    monkeypatch.setattr(metrics, "api_server_probe", fast_probe(0.25))
+    body = client.get("/metrics").text
+    assert "nf_cluster_probe_seconds 0.25" in body
+
+
+def test_the_scrape_probes_once_no_matter_how_many_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes: list[float] = []
+
+    def counted(**kwargs: object) -> object:
+        probes.append(0.0)
+        return deploy_engine.Probe(answered=True, seconds=0.05)
+
+    monkeypatch.setattr(metrics, "release_names", lambda: [f"nf-{i}" for i in range(12)])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    monkeypatch.setattr(metrics, "api_server_probe", counted)
+    client.get("/metrics")
+    assert len(probes) == 1
+
+
+def test_a_probe_that_never_comes_back_is_busy_with_no_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing to report is not the same as nothing to worry about."""
+    import time
+
+    monkeypatch.setattr(metrics, "PROBE_TIMEOUT", 0.05)
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+
+    def never(**kwargs: object) -> object:
+        time.sleep(0.5)
+        return deploy_engine.Probe(answered=True, seconds=0.5)
+
+    monkeypatch.setattr(metrics, "api_server_probe", never)
+    body = client.get("/metrics").text
+    assert "nf_cluster_busy 1.0" in body
+    samples = [line for line in body.splitlines() if not line.startswith("#")]
+    assert not any(line.startswith("nf_cluster_probe_seconds ") for line in samples)

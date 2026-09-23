@@ -3,7 +3,7 @@
 [![CI](https://github.com/poggymacello/nf-orchestrator/actions/workflows/ci.yaml/badge.svg)](https://github.com/poggymacello/nf-orchestrator/actions/workflows/ci.yaml)
 
 Takes a declarative intent, validates it, deploys a network function with Helm onto Kubernetes, and
-reports its lifecycle state from live cluster signals — plus nine failure drills that each proved
+reports its lifecycle state from live cluster signals — plus ten failure drills that each proved
 the reporting wrong, and the fixes that followed.
 
 This is a **self-directed learning project**: a generic re-implementation, built only from public
@@ -90,7 +90,7 @@ $ curl -s -X DELETE localhost:8000/deployments/sample-nf
 
 ## The part worth three minutes: the failure drills
 
-Nine deliberate failure drills were run, each with the expected behaviour written down first, a
+Ten deliberate failure drills were run, each with the expected behaviour written down first, a
 blameless postmortem from the captured output, fixes verified by re-running the drill, and runbooks
 corrected when a drill proved them wrong. Every one found the orchestrator — or the monitoring around
 it — reporting something false.
@@ -106,8 +106,9 @@ it — reporting something false.
 | [7 — the scrape outgrows its budget](docs/operations/postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md) | Twenty **healthy** releases took the scrape to 8.4s against a 5s timeout, and the alert for a failed scrape **paged that a running orchestrator was down** |
 | [8 — a slow API server](docs/operations/postmortems/2026-09-16-drill-8-a-slow-api-server.md) | The fix from drill 7 became the defect: against a **slow** cluster, 16 parallel readers left every release half-read and **none** reported, where 2 readers reported six |
 | [9 — the API server sheds load](docs/operations/postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md) | Real API Priority and Fairness rejections, answered instantly with 429 — and **reported as an outage**, the page that sends someone to restart a control plane that was up |
+| [10 — the API server queues instead of refusing](docs/operations/postmortems/2026-09-23-drill-10-the-api-server-queues-instead-of-refusing.md) | The same flow control set to **queue** instead of reject: nothing failed, so nothing said the cluster was throttling — every release went unreported as though the orchestrator were simply too slow, and the readiness probe that drill 9's fix depends on was itself too slow to answer |
 
-30 findings. Every defect is fixed and re-verified; six are limits, accepted and written down.
+37 findings. Every defect is fixed and re-verified; eight are limits, accepted and written down.
 Drills 1-3 were one mistake in four places: two things that are usually equal, collapsed into a
 single value, diverging only during an incident — pod phase versus container readiness,
 release-absent versus cluster-unreachable, intent submitted versus intent applied, operation failed
@@ -133,10 +134,11 @@ Recorded as ADRs with the alternatives that were rejected and why —
 | [0014](docs/design/adr/0014-the-scrape-has-one-budget.md) | The scrape has one budget, and a release with no coverage is named rather than counted |
 | [0015](docs/design/adr/0015-admit-scrape-work-in-waves.md) | A scrape admits work in waves, and stops when the budget says it cannot finish |
 | [0016](docs/design/adr/0016-busy-is-not-unreachable.md) | A throttled cluster is busy, not unreachable: 503 with `Retry-After`, and its own alert |
+| [0017](docs/design/adr/0017-reachability-needs-more-than-one-witness.md) | Reachability needs two witnesses, and how long the readiness probe took is one of the measurements |
 
 ## Tests and CI
 
-169 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
+180 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
 five jobs on every branch push: `lint-test` with no cluster; `secret-scan` (Gitleaks over the full
 history); `banned-terms` (private terms, from a secret, never printed); `vuln-scan` (Trivy over the
 chart and the dependency set); and `e2e`, which creates a kind cluster on each of two pinned
@@ -180,7 +182,7 @@ Status per milestone: [`docs/milestone-map.md`](docs/milestone-map.md).
 
 | | |
 |---|---|
-| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 15 ADRs |
+| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 16 ADRs |
 | [Operations](docs/operations/README.md) | Failure drills, postmortems, runbooks, alerting |
 | [Build log](docs/build-log/) | Per-milestone: what was set out to do, what broke, what was learned |
 | [Daily log](docs/daily-log/) | A dated record of every working day on this project |

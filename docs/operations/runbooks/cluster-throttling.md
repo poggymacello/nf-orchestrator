@@ -1,16 +1,18 @@
 # Runbook — cluster throttling the orchestrator
 
-**Use when:** `ClusterThrottlingOrchestrator` is firing, `nf_cluster_busy` is 1, or a route returns
-`503` with a `Retry-After` header and a detail saying the API server is *reachable and not serving
-this client*.
+**Use when:** `ClusterThrottlingOrchestrator` is firing, `nf_cluster_busy` is 1,
+`nf_cluster_probe_seconds` is high, or a route returns `503` with a `Retry-After` header and a
+detail saying the API server is *reachable and not serving this client*.
 
 **Severity:** Sev-1 while lifecycle series are missing — nothing can alert on those network
 functions. It is **not** an outage: do not restart the control plane.
 
 Every command here was run during
-[drill 9](../postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md) on 2026-09-17, against a
-throwaway cluster whose API Priority and Fairness (APF) was configured to throttle the orchestrator.
-Steps not exercised there are marked **(not drilled)**.
+[drill 9](../postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md) on 2026-09-17 and
+[drill 10](../postmortems/2026-09-23-drill-10-the-api-server-queues-instead-of-refusing.md) on
+2026-09-23, against throwaway clusters whose API Priority and Fairness (APF) was configured to
+throttle the orchestrator — rejecting in drill 9, queueing in drill 10. Steps not exercised there
+are marked **(not drilled)**.
 
 On Git Bash, set this first, or every `--raw /...` below is rewritten into a Windows path and the API
 server answers `NotFound`:
@@ -36,9 +38,29 @@ retry-after: 5
 ```
 
 `/readyz` keeps answering `200` throughout — Kubernetes serves health endpoints outside the
-throttled priority levels, which is exactly how the orchestrator tells this apart from an outage.
+throttled priority levels, which is how the orchestrator tells this apart from an outage.
 `ClusterUnreachable` does **not** fire. If it does, this is the wrong runbook:
 [control plane unreachable](control-plane-unreachable.md).
+
+**The quiet form of this incident has no `503` at all.** When APF queues instead of rejecting
+(drill 10), every call succeeds eventually and the only symptoms are a scrape near its budget,
+releases missing for `reason="deadline"`, and a slow probe:
+
+```bash
+curl -s localhost:8000/metrics | grep -E '^nf_(cluster_busy|cluster_probe_seconds|releases_unreported)'
+```
+
+```
+nf_cluster_busy 1.0
+nf_cluster_probe_seconds 0.765
+nf_releases_unreported{reason="deadline"} 5.0
+```
+
+`nf_cluster_probe_seconds` is how long the API server took to answer `/readyz`, the cheapest call it
+serves: 0.06 – 0.25s idle in the drill, 0.25 – 0.80s while queueing, and up to 3.58s measured from a
+shell. Above 0.5s the orchestrator calls the cluster busy. If that number is normal and releases are
+still late, the scrape really is short of time — go to
+[scrape over budget](scrape-over-budget.md).
 
 ## 1. Confirm the API server is shedding, and for whom
 
@@ -101,11 +123,28 @@ own: the orchestrator was throttling itself (step 3) and kept the signal at 1 fo
 With the ceiling lowered, the first scrape checked — 15 seconds after the restart — was already 0.
 Wait at least a minute before concluding a fix did not work.
 
+## 6. Check which shape of throttling it is
+
+```bash
+kubectl get prioritylevelconfiguration <level> -o jsonpath='{.spec.limited.limitResponse.type}'
+```
+
+`Reject` is drill 9: 429s, `Retry-After` from the server, `nf_releases_unreported{reason="busy"}`.
+`Queue` is drill 10: no errors at all, releases late for `reason="deadline"`, and the probe duration
+carrying the signal on its own. A queue that overflows rejects as well, so both can appear at once —
+drill 10 saw 210 rejections with `Retry-After` 1, 2, 4 and 8 seconds before its queue was widened.
+
+Queueing also reaches further than the orchestrator's own reads: a deploy waits in the same queue,
+and `Retry-After: 5` on a `503` is the orchestrator's guess, not the cluster's, because a queueing
+server publishes no estimate of the wait.
+
 ## What this runbook does not cover
 
-- **`limitResponse: Queue`.** APF can hold requests instead of rejecting them; the orchestrator
-  would then see slowness rather than 429s, closer to
-  [drill 8](../postmortems/2026-09-16-drill-8-a-slow-api-server.md). **(not drilled)**
-- **Changing APF configuration on a shared cluster.** The drill did it on a throwaway cluster.
-  [`manifests/apf-drill.yaml`](../manifests/apf-drill.yaml) is not something to apply anywhere
-  that matters.
+- **Changing APF configuration on a shared cluster.** The drills did it on throwaway clusters.
+  [`manifests/apf-drill.yaml`](../manifests/apf-drill.yaml) and
+  [`manifests/apf-queue-drill.yaml`](../manifests/apf-queue-drill.yaml) are not something to apply
+  anywhere that matters.
+- **Separating a slow cluster from a loaded orchestrator host.** `nf_cluster_probe_seconds` includes
+  the cost of starting kubectl locally, so a machine under heavy load inflates it. Both readings
+  mean "the orchestrator is not being served promptly"; deciding which end is at fault needs the API
+  server's own latency metrics. **(not drilled)**

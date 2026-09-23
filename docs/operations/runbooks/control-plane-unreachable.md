@@ -47,6 +47,13 @@ time — that is [scrape over budget](scrape-over-budget.md), not this runbook. 
 [cluster throttling](cluster-throttling.md). Before 2026-09-17 that case was reported here, as
 "did not answer within 3s" ([drill 9](../postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md)).
 
+**A cluster that has just stopped answering reads as busy for up to 30 seconds before it reads as
+unreachable.** Since 2026-09-23 a call that completed recently counts as evidence that the cluster
+is there, because an overloaded API server can be too slow to answer even its own readiness probe
+([drill 10](../postmortems/2026-09-23-drill-10-the-api-server-queues-instead-of-refusing.md)). A
+frozen node measured ~24 seconds of `reachable and not serving this client` before flipping. If you
+are watching a suspected outage start, give it half a minute before believing the label.
+
 > **Before 2026-08-21** this endpoint returned HTTP 200 with
 > `{"state":"NOT_INSTANTIATED","helm_status":null,"pods":[]}` during an outage, identical to a
 > genuine teardown, and `DELETE` returned `{"uninstalled": false}` for a release that was still

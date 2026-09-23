@@ -1,6 +1,9 @@
 import json
 import os
 import subprocess
+import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +50,22 @@ BUSY_MARKERS = (
 # the read timeout, inside the scrape budget — a test pins that.
 PROBE_TIMEOUT = float(os.environ.get("NF_PROBE_TIMEOUT", "0.75"))
 READYZ = ["get", "--raw=/readyz"]
+
+# A probe answer is reused for this long. Drill 10 fired one probe per timed-out call: a
+# wave of eight stalled releases asked the same question eight times in the same instant,
+# of a server that was already over capacity. Long enough to cover one scrape, short
+# enough that the answer still describes now.
+PROBE_TTL = float(os.environ.get("NF_PROBE_TTL", "2"))
+
+# A probe that answers this slowly says the server is being served slowly. `/readyz` is the
+# cheapest thing the API server does and runs on a flow nobody throttles; drill 10 measured
+# it at 0.45-3.58s (mean 1.65s) under queued back-pressure against ~0.25s idle.
+SLOW_PROBE = float(os.environ.get("NF_SLOW_PROBE", "0.5"))
+
+# How long a successful call keeps counting as evidence that the cluster is there. Under
+# queueing the probe is often too slow to answer inside PROBE_TIMEOUT, which on its own
+# looked exactly like drill 7's stalled server — while other calls were still completing.
+RECENT_SUCCESS = float(os.environ.get("NF_RECENT_SUCCESS", "30"))
 
 # Server-side apply refusing to take a field from another manager. The wording comes
 # from the M4 drill-3 conflict, where `kubectl scale` owned `.spec.replicas`.
@@ -110,6 +129,84 @@ def release_name(intent: Intent) -> str:
     return intent.name
 
 
+@dataclass(frozen=True)
+class Probe:
+    """What asking the API server for `/readyz` cost, and whether it answered at all."""
+
+    answered: bool
+    seconds: float
+
+    @property
+    def slow(self) -> bool:
+        """Whether the cheapest call the API server serves was not served promptly.
+
+        A probe that never came back inside its own bound counts as slow, not as absent:
+        drill 10 watched an API server under queued back-pressure take up to 3.58s to say
+        `ok`, with every release still readable, and "it did not answer in 0.75s" is not
+        the same statement as "it is not there".
+        """
+        return not self.answered or self.seconds >= SLOW_PROBE
+
+
+_probe_lock = threading.Lock()
+_probe: tuple[float, Probe] | None = None
+_last_success: float | None = None
+
+
+def reset_probe_state() -> None:
+    """Forget the cached probe and the last successful call. For tests."""
+    global _probe, _last_success
+    with _probe_lock:
+        _probe = None
+        _last_success = None
+
+
+def note_success() -> None:
+    """Record that the cluster answered us just now, whatever it answered."""
+    global _last_success
+    _last_success = time.monotonic()
+
+
+def answered_recently(window: float = RECENT_SUCCESS) -> bool:
+    return _last_success is not None and time.monotonic() - _last_success <= window
+
+
+def api_server_probe(max_age: float = PROBE_TTL) -> Probe:
+    """Ask `/readyz`, or reuse an answer no older than `max_age` seconds.
+
+    The lock also means that when several calls time out together, the first one probes
+    and the rest wait for its answer instead of each starting a kubectl of their own.
+    """
+    global _probe
+    with _probe_lock:
+        cached = _probe
+        if cached is not None and time.monotonic() - cached[0] <= max_age:
+            return cached[1]
+        measured = _measure_probe()
+        _probe = (time.monotonic(), measured)
+        return measured
+
+
+def _measure_probe() -> Probe:
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["kubectl", "--context", KUBE_CONTEXT, *READYZ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return Probe(answered=False, seconds=time.monotonic() - started)
+    except OSError:
+        return Probe(answered=False, seconds=time.monotonic() - started)
+    answered = result.returncode == 0
+    if answered:
+        note_success()
+    return Probe(answered=answered, seconds=time.monotonic() - started)
+
+
 def run_bounded(command: list[str], args: list[str], timeout: float) -> str:
     """Run a cluster command, failing as unreachable rather than waiting indefinitely.
 
@@ -126,39 +223,53 @@ def run_bounded(command: list[str], args: list[str], timeout: float) -> str:
         )
     except subprocess.TimeoutExpired as exc:
         verb = " ".join([command[0], *args[:1]])
-        if args != READYZ and api_server_answers():
-            raise ClusterBusy(
-                f"{verb} did not answer within {timeout:g}s, but the API server answers "
-                "its readiness probe: it is reachable and not serving this client "
-                "(throttled or overloaded)"
-            ) from exc
+        if args != READYZ:
+            evidence = reachability_evidence()
+            if evidence:
+                raise ClusterBusy(
+                    f"{verb} did not answer within {timeout:g}s, but {evidence}: it is "
+                    "reachable and not serving this client (throttled or overloaded)"
+                ) from exc
         raise ClusterUnreachable(f"{verb} did not answer within {timeout:g}s") from exc
     if result.returncode != 0:
-        raise classify_error(result.stderr.strip() or result.stdout.strip())
+        error = classify_error(result.stderr.strip() or result.stdout.strip())
+        if not isinstance(error, ClusterUnreachable):
+            # It refused us, conflicted with us, or told us to come back later. Whatever
+            # it said, it was there to say it.
+            note_success()
+        raise error
+    note_success()
     return result.stdout
 
 
+def reachability_evidence() -> str:
+    """Why we can say the cluster is there, after a call of ours was killed for silence.
+
+    Two independent sources, because drill 10 broke the first one. The probe is the
+    direct answer. A call that completed moments ago is the indirect one, and it is what
+    covers a server too loaded to serve even `/readyz` inside its bound while still
+    serving everything else — the shape queueing takes. Neither is true of drills 2, 6
+    and 7, where nothing answered at all.
+    """
+    if api_server_probe().answered:
+        return "the API server answers its readiness probe"
+    if answered_recently():
+        return "the cluster answered another call moments ago"
+    return ""
+
+
 def api_server_answers() -> bool:
-    """Whether the API server answers `/readyz` quickly, asked after a call timed out.
+    """Whether the API server answers `/readyz` inside its bound, cached for PROBE_TTL.
 
     A timeout alone cannot tell a server that is gone from one that is refusing this
     client. Kubernetes serves probe endpoints outside the flow-control levels that
     throttle ordinary requests, so during drill 9's load shedding `/readyz` answered in
     ~0.2s while every list and helm call waited on `Retry-After`. When the server is
     frozen or stalled (drills 6 and 7) the probe times out too, and the answer stays
-    "unreachable".
+    "unreachable" — but so does a server that is merely overloaded, which is why this is
+    no longer the only evidence considered. See reachability_evidence.
     """
-    try:
-        result = subprocess.run(
-            ["kubectl", "--context", KUBE_CONTEXT, *READYZ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=PROBE_TIMEOUT,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return result.returncode == 0
+    return api_server_probe().answered
 
 
 def timeout_for(args: list[str]) -> float:
