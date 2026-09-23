@@ -1,0 +1,57 @@
+# Drill 10's API Priority and Fairness setup, as applied to a throwaway kind cluster.
+#
+# Same identity and the same 3 seats as apf-drill.yaml, with the one difference the drill
+# was for: excess requests are HELD rather than rejected, so the orchestrator sees delay
+# and no errors at all. Do not apply this to a cluster anyone depends on.
+#
+# queueLengthLimit started at 50 and the queue overflowed under 200 threads, which made
+# the server reject after all (429 with Retry-After 1-8s) — drill 9's incident arriving
+# through drill 10's door. 200 was enough to keep the drill on the queueing path.
+#
+# The service account, Role and RoleBinding are identical to apf-drill.yaml and are
+# repeated here so this file can be applied on its own.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: nf-orchestrator, namespace: default}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: nf-orchestrator-read, namespace: default}
+rules:
+- apiGroups: [""]
+  resources: [pods, secrets]
+  verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: nf-orchestrator-read, namespace: default}
+subjects: [{kind: ServiceAccount, name: nf-orchestrator, namespace: default}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: nf-orchestrator-read}
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata: {name: nf-drill-queue}
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 1
+    lendablePercent: 0
+    limitResponse:
+      type: Queue
+      queuing: {queues: 1, handSize: 1, queueLengthLimit: 200}
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata: {name: nf-orchestrator}
+spec:
+  matchingPrecedence: 500
+  priorityLevelConfiguration: {name: nf-drill-queue}
+  distinguisherMethod: {type: ByUser}
+  rules:
+  - subjects: [{kind: ServiceAccount, serviceAccount: {name: nf-orchestrator, namespace: default}}]
+    resourceRules: [{verbs: ["*"], apiGroups: ["*"], resources: ["*"], namespaces: ["*"], clusterScope: true}]
+    # Matches /readyz too, but loses to the built-in `probes` FlowSchema, whose matching
+    # precedence is far higher. Confirmed from the API server's own counters during the
+    # drill: probe calls were dispatched at the exempt level, never at this one. They were
+    # still slow, which is finding 2.
+    nonResourceRules: [{verbs: ["*"], nonResourceURLs: ["*"]}]

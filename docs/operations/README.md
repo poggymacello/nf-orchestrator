@@ -45,6 +45,7 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | 7 | A stalled API server, and a scrape that outgrew its budget | 2026-09-14 | 4 findings — drill 6's bound held against a post-handshake stall, but it was per call: twenty **healthy** releases took the scrape to 8.4s and `OrchestratorScrapeFailing` paged for an orchestrator that was up; and past a deadline the same releases went unreported every time, with nothing naming them. 1-3 fixed, 4 accepted | [drill-7](postmortems/2026-09-14-drill-7-the-scrape-outgrows-its-budget.md) |
 | 8 | An API server that is slow, not silent | 2026-09-16 | 3 findings — the scrape budget held, but day 25's concurrency **made things worse** under load: against a slow, queue-limited API server, 16 workers left all 30 releases half-read and **none** reported, while 2 workers reported six. 1 fixed by admitting work in waves, 2 and 3 accepted | [drill-8](postmortems/2026-09-16-drill-8-a-slow-api-server.md) |
 | 9 | The API server sheds load | 2026-09-17 | 3 findings — under real API Priority and Fairness shedding (429, `Retry-After` up to 32s, `/readyz` still instant) every call was reported as **unreachable**, the page for a dead control plane; and the orchestrator's own concurrency throttled itself against a 3-seat allowance. 1 and 2 fixed, 3 accepted with a verified setting | [drill-9](postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md) |
+| 10 | The API server queues instead of refusing | 2026-09-23 | 7 findings — with API Priority and Fairness **queueing** rather than rejecting, nothing failed: every release went unreported for `reason="deadline"` with `nf_cluster_busy` at 0, the orchestrator's own budget incident; and the readiness probe drill 9's fix relies on took up to 3.58s itself, reporting a healthy cluster as **unreachable**. 1-5 fixed, 6 and 7 accepted and measured | [drill-10](postmortems/2026-09-23-drill-10-the-api-server-queues-instead-of-refusing.md) |
 | — | Node disk full | — | Abandoned on 2026-08-20 and superseded by drill 5, which turned eviction back on and calibrated the threshold to the host's free space instead of filling 760 GiB to reach a conventional one | — |
 
 ## Runbooks
@@ -66,7 +67,7 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-All nine drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
+All ten drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
 they found is now fixed, across ADRs [0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md),
 [0007](../design/adr/0007-stability-is-an-alerting-concern.md),
 [0008](../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md) and
@@ -75,7 +76,8 @@ translator for drill 4, in the reconciler's derivation for drill 5, in the subpr
 alert rules for drill 6, in the scrape budget of
 [ADR-0014](../design/adr/0014-the-scrape-has-one-budget.md) for drill 7, in the wave admission of
 [ADR-0015](../design/adr/0015-admit-scrape-work-in-waves.md) for drill 8, and in the busy
-classification of [ADR-0016](../design/adr/0016-busy-is-not-unreachable.md) for drill 9. Each drill's action-item
+classification of [ADR-0016](../design/adr/0016-busy-is-not-unreachable.md) for drill 9, and in the
+two-witness reachability of [ADR-0017](../design/adr/0017-reachability-needs-more-than-one-witness.md) for drill 10. Each drill's action-item
 table says which change closed which finding.
 
 Five items stay open and none is a defect. Drill 9's finding 3: a scrape concurrency ceiling above
