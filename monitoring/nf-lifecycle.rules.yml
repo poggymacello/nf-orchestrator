@@ -107,9 +107,14 @@ groups:
       # /readyz instantly. Before this, that read as ClusterUnreachable — a page that sends
       # someone to restart a control plane that is up. It is a different incident: the
       # cluster is there, and this client is being throttled or the server is overloaded.
+      #
+      # Drill 10: under APF queueing the same incident is intermittent — the probe took
+      # 0.25-0.80s against 0.25s idle, so the per-scrape signal flipped between 1 and 0
+      # and `nf_cluster_busy == 1` never held for a whole `for:` window. The alert now
+      # asks how much of the window was throttled, which a flapping signal can answer.
       - alert: ClusterThrottlingOrchestrator
-        expr: nf_cluster_busy == 1
-        for: 2m
+        expr: avg_over_time(nf_cluster_busy[2m]) >= 0.5
+        for: 1m
         labels:
           severity: page
         annotations:
@@ -119,3 +124,5 @@ groups:
             requests are being throttled or the API server is overloaded, not because it
             is down. Check API Priority and Fairness for the orchestrator's identity
             before restarting anything — follow runbooks/cluster-throttling.md.
+            nf_cluster_probe_seconds is the measurement behind this: how long the API
+            server took to answer the cheapest call it serves.
