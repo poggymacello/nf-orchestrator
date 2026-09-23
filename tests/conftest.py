@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator import deploy as deploy_engine
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 CLUSTER_TOOLS = frozenset({"helm", "kubectl"})
@@ -55,3 +57,15 @@ def unit_tests_never_reach_a_cluster(
         "fake the function the code under test actually calls"
     )
 
+
+@pytest.fixture(autouse=True)
+def probe_state_starts_empty() -> Iterator[None]:
+    """No test inherits another test's probe answer or its last successful call.
+
+    The reachability evidence added on day 29 is process-wide by design — one probe
+    serves every caller for PROBE_TTL — so without this a test asserting "nothing
+    answered" would quietly pass or fail on whichever test ran before it.
+    """
+    deploy_engine.reset_probe_state()
+    yield
+    deploy_engine.reset_probe_state()
