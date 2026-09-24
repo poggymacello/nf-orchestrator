@@ -142,7 +142,11 @@ swallowed:
 - `nf_cluster_probe_seconds` measures the orchestrator's host as well as the cluster: a machine too
   busy to start kubectl promptly looks like a server too busy to answer it. Both are "the
   orchestrator is not being served", which is what the alert says, but the two causes are not
-  separated here.
+  separated here. *Since answered by
+  [drill 11](2026-09-24-drill-11-the-orchestrator-host-is-starved.md): the probe now reports the
+  cluster's round trip and this host's share separately. A re-run of this drill's queueing on
+  2026-09-24 put the round trip at 1.0–2.2s and the host's share at about 0.1s, so the slowness
+  measured here was the server's.*
 - The persistent cluster was untouched throughout; it is still unreachable behind a Windows port
   reservation, as [control plane unreachable](../runbooks/control-plane-unreachable.md) step 4
   describes.
