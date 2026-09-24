@@ -44,6 +44,9 @@ a single series in six minutes. Do not wait for them to "come round".
   with step 2.
 - `reason="busy"` — the API server was reachable and not serving the orchestrator. Go to
   [cluster throttling](cluster-throttling.md).
+- `reason="host"` — the call ran long on the orchestrator's own machine while the cluster answered
+  promptly. Go to [the orchestrator's host is overloaded](#the-orchestrators-host-is-overloaded).
+  `reason="deadline"` alongside `OrchestratorHostOverloaded` means the same thing.
 - `reason="error"` — reading that release failed while the others succeeded. The drill produced no
   errors, so this branch is covered by a unit test only **(not drilled)**. Read the release directly
   and the error comes back in the response:
@@ -110,6 +113,58 @@ and latency before changing any setting in this project.
 or above that. A scrape that runs past the timeout is thrown away whole: every release loses its
 series and `OrchestratorScrapeFailing` pages — which is exactly what drill 7 found before the budget
 existed.
+
+## The orchestrator's host is overloaded
+
+**Use when:** `OrchestratorHostOverloaded` is firing, `reason="host"` is non-zero, or a `503` detail
+says *the delay is the orchestrator's own host, not the cluster*.
+
+Every step here was run during
+[drill 11](../postmortems/2026-09-24-drill-11-the-orchestrator-host-is-starved.md) on 2026-09-24,
+with the orchestrator's CPU starved and the cluster healthy.
+
+**First, check which end is slow.** The probe reports both:
+
+```bash
+curl -s localhost:8000/metrics | grep -E '^nf_(cluster_probe_seconds|orchestrator_probe_local_seconds|cluster_busy)'
+```
+
+```
+nf_cluster_busy 0.0
+nf_cluster_probe_seconds 0.039
+nf_orchestrator_probe_local_seconds 1.305
+```
+
+`nf_cluster_probe_seconds` is the cluster's round trip, as client-go measured it. The drill saw
+34–53ms here, and 5–8ms idle. `nf_orchestrator_probe_local_seconds` is everything else, mostly
+starting kubectl: 1.0–2.3s in the drill, and about 0.1s idle. **If the first number is low and the
+second is high, leave the cluster alone.** If both are high, both ends are struggling. Deal with the
+host first, because while it is starved the cluster's number is the less reliable of the two.
+
+**Then find what is using the machine.** On the Windows host that ran the drill:
+
+```powershell
+Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name,Id,CPU
+```
+
+In the drill, this was eight `python3.11` processes, each a busy loop pinned to the orchestrator's
+core. Anything pinned to the same core as the orchestrator hurts more than its share: the kubectl
+and helm processes the orchestrator starts inherit its CPU affinity. Check the orchestrator's own
+affinity too:
+
+```powershell
+(Get-Process -Id (Get-NetTCPConnection -LocalPort 8000 -State Listen).OwningProcess).ProcessorAffinity
+```
+
+The drill's value was `1` (core 0 only). An unpinned process on this 16-thread machine shows
+`65535`.
+
+**Expect the alert to clear about a minute after the load goes.** The metrics were back to normal
+in the first scrape, about 10 seconds after the burners stopped. The alert averages over two
+minutes. **(the alert clearing was not watched to the end)**
+
+**What does not help:** more workers (the host is already short of CPU), a bigger budget (the
+scrape timeout is fixed at 5s), or anything on the cluster.
 
 ## What this runbook does not cover
 
