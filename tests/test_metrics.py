@@ -464,24 +464,139 @@ def test_the_scrape_probes_once_no_matter_how_many_releases(
     assert len(probes) == 1
 
 
-def test_a_probe_that_never_comes_back_is_busy_with_no_duration(
+def test_a_probe_that_never_comes_back_is_not_blamed_on_the_cluster(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Nothing to report is not the same as nothing to worry about."""
+    """Day 29 read a missing probe as a busy cluster. Drill 11 found the likeliest reason
+    for a missing probe is a host too slow to run it, which says nothing about the cluster.
+    """
     import time
 
-    monkeypatch.setattr(metrics, "PROBE_TIMEOUT", 0.05)
+    monkeypatch.setattr(metrics, "SCRAPE_BUDGET", 0.05)
     monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
     monkeypatch.setattr(
         metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
     )
 
     def never(**kwargs: object) -> object:
-        time.sleep(0.5)
-        return deploy_engine.Probe(answered=True, seconds=0.5)
+        time.sleep(1.0)
+        return deploy_engine.Probe(answered=True, seconds=1.0)
 
     monkeypatch.setattr(metrics, "api_server_probe", never)
     body = client.get("/metrics").text
-    assert "nf_cluster_busy 1.0" in body
+    assert "nf_cluster_busy 0.0" in body
     samples = [line for line in body.splitlines() if not line.startswith("#")]
     assert not any(line.startswith("nf_cluster_probe_seconds ") for line in samples)
+
+
+# --- drill 11: the orchestrator's own host is starved, and the cluster is fine ---
+
+
+def test_a_starved_host_is_not_a_throttling_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 11's numbers: ~1.1s of wall time, of which the cluster took 41ms."""
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    monkeypatch.setattr(
+        metrics,
+        "api_server_probe",
+        lambda **kwargs: deploy_engine.Probe(answered=True, seconds=1.1, round_trip=0.041),
+    )
+    body = client.get("/metrics").text
+    assert "nf_cluster_busy 0.0" in body
+    assert "nf_cluster_probe_seconds 0.041" in body
+    local = re.search(r"^nf_orchestrator_probe_local_seconds (\S+)$", body, re.MULTILINE)
+    assert local and abs(float(local.group(1)) - 1.059) < 1e-9
+
+
+def test_a_slow_round_trip_is_still_a_busy_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 10 must keep reading as throttling once the round trip is the measure."""
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    monkeypatch.setattr(
+        metrics,
+        "api_server_probe",
+        lambda **kwargs: deploy_engine.Probe(answered=True, seconds=1.7, round_trip=1.65),
+    )
+    body = client.get("/metrics").text
+    assert "nf_cluster_busy 1.0" in body
+
+
+def test_the_scrape_probe_gets_most_of_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It runs beside the work, so it is not held to the 0.75s a failed call can spare."""
+    asked: list[object] = []
+
+    def record(**kwargs: object) -> object:
+        asked.append(kwargs.get("timeout"))
+        return deploy_engine.Probe(answered=True, seconds=0.05, round_trip=0.005)
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    monkeypatch.setattr(metrics, "api_server_probe", record)
+    client.get("/metrics")
+    assert asked == [metrics.SCRAPE_PROBE_TIMEOUT]
+    assert deploy_engine.PROBE_TIMEOUT < metrics.SCRAPE_PROBE_TIMEOUT < metrics.SCRAPE_BUDGET
+
+
+def test_a_listing_late_because_of_this_host_does_not_blame_the_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 11, after the probe was split: the pod listing ran past its bound on the
+    starved host, the probe answered, and the scrape still set nf_cluster_busy."""
+
+    def late_pods() -> dict[str, list[dict[str, object]]]:
+        raise deploy_engine.HostOverloaded("kubectl get did not answer; this host is slow")
+
+    def late_release(name: str, pods: object = None) -> dict[str, object]:
+        raise deploy_engine.HostOverloaded("helm history did not answer; this host is slow")
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(metrics, "release_pods", late_pods)
+    monkeypatch.setattr(metrics, "reconcile_release", late_release)
+    body = client.get("/metrics").text
+    assert "nf_cluster_busy 0.0" in body
+    assert 'nf_releases_unreported{reason="host"} 1.0' in body
+    assert 'nf_releases_unreported{reason="busy"} 0.0' in body
+
+
+def test_a_listing_this_host_could_not_run_claims_nothing_about_the_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def late_names() -> list[str]:
+        raise deploy_engine.HostOverloaded("helm list did not answer; this host is slow")
+
+    monkeypatch.setattr(metrics, "release_names", late_names)
+    monkeypatch.setattr(
+        metrics,
+        "api_server_probe",
+        lambda **kwargs: deploy_engine.Probe(answered=True, seconds=1.2, round_trip=0.04),
+    )
+    samples = [
+        line for line in client.get("/metrics").text.splitlines() if not line.startswith("#")
+    ]
+    assert not any(line.startswith(("nf_cluster_reachable", "nf_cluster_busy")) for line in samples)
+    assert any(line.startswith("nf_orchestrator_probe_local_seconds ") for line in samples)
+
+
+def test_a_throttled_listing_still_reports_the_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused() -> list[str]:
+        raise deploy_engine.ClusterBusy("helm list did not answer; the API server is up")
+
+    monkeypatch.setattr(metrics, "release_names", refused)
+    monkeypatch.setattr(
+        metrics,
+        "api_server_probe",
+        lambda **kwargs: deploy_engine.Probe(answered=True, seconds=1.6, round_trip=1.5),
+    )
+    body = client.get("/metrics").text
+    assert "nf_cluster_busy 1.0" in body
+    assert "nf_cluster_probe_seconds 1.5" in body

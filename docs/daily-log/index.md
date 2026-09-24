@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-09-24 | 30 | Starve the orchestrator's own host with the cluster healthy, and stop a busy laptop paging as a throttling cluster | [2026-09-24](2026-09-24.md) |
 | 2026-09-23 | 29 | Drill flow control that queues instead of rejecting, where an incident produces no errors at all | [2026-09-23](2026-09-23.md) |
 | 2026-09-17 | 28 | Let the API server shed load for real, and find throttling reported as an outage | [2026-09-17](2026-09-17.md) |
 | 2026-09-16 | 27 | Make the API server slow, and find yesterday's concurrency starving every release | [2026-09-16](2026-09-16.md) |

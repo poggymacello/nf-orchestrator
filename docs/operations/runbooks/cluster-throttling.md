@@ -57,9 +57,18 @@ nf_releases_unreported{reason="deadline"} 5.0
 ```
 
 `nf_cluster_probe_seconds` is how long the API server took to answer `/readyz`, the cheapest call it
-serves: 0.06 – 0.25s idle in the drill, 0.25 – 0.80s while queueing, and up to 3.58s measured from a
-shell. Above 0.5s the orchestrator calls the cluster busy. If that number is normal and releases are
-still late, the scrape really is short of time — go to
+serves. Since 2026-09-24 it is client-go's own round trip, request to response, which leaves out
+starting kubectl
+([drill 11](../postmortems/2026-09-24-drill-11-the-orchestrator-host-is-starved.md)). Queueing on
+2026-09-24 measured it at 1.0 – 2.2s, against 5 – 12ms idle. Above 0.5s the orchestrator calls the
+cluster busy. The drill-10 numbers in the sample above are from before this change: they were wall
+time and included the orchestrator's own share.
+
+**Check the other end before acting on this runbook.**
+`nf_orchestrator_probe_local_seconds` is the part of the same probe spent on the orchestrator's
+machine. If that is the high number and the round trip is low, this is not throttling. Go to
+[the orchestrator's host is overloaded](scrape-over-budget.md#the-orchestrators-host-is-overloaded).
+If both numbers are normal and releases are still late, the scrape really is short of time: go to
 [scrape over budget](scrape-over-budget.md).
 
 ## 1. Confirm the API server is shedding, and for whom
@@ -144,7 +153,5 @@ server publishes no estimate of the wait.
   [`manifests/apf-drill.yaml`](../manifests/apf-drill.yaml) and
   [`manifests/apf-queue-drill.yaml`](../manifests/apf-queue-drill.yaml) are not something to apply
   anywhere that matters.
-- **Separating a slow cluster from a loaded orchestrator host.** `nf_cluster_probe_seconds` includes
-  the cost of starting kubectl locally, so a machine under heavy load inflates it. Both readings
-  mean "the orchestrator is not being served promptly"; deciding which end is at fault needs the API
-  server's own latency metrics. **(not drilled)**
+- **Memory or I/O pressure on the orchestrator's host.** Drill 11 starved its CPU only; the probe's
+  split should separate the other kinds the same way. **(not drilled)**
