@@ -15,6 +15,12 @@ HELM_OUTPUT = json.dumps(
     {"name": "sample-nf", "version": 1, "info": {"status": "deployed"}}
 )
 
+# What kubectl at -v=6 has logged by the time a call against a stalled or frozen server is
+# killed: measured on day 30, 5 of 5 probes against drill 7's stall server had 11 lines.
+# A timeout with nothing logged at all is a different incident — a host too starved to
+# start kubectl (drill 11) — so fakes for a stalled server must carry this.
+STARTED = b"I0924 10:30:01.000000   4242 loader.go:407] Config loaded from file\n"
+
 
 def test_values_come_from_the_intent() -> None:
     values = deploy_engine.render_values(Intent.model_validate(VALID))
@@ -187,7 +193,9 @@ def test_a_command_that_never_answers_is_unreachable(monkeypatch: pytest.MonkeyP
     import subprocess
 
     def hang(*args: object, **kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd="kubectl", timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd="kubectl", timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     monkeypatch.setattr(subprocess, "run", hang)
     with pytest.raises(deploy_engine.ClusterUnreachable, match="did not answer within"):
@@ -201,7 +209,9 @@ def test_a_timeout_names_the_verb_not_the_context_flag(
     import subprocess
 
     def hang(*args: object, **kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd="kubectl", timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd="kubectl", timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     monkeypatch.setattr(subprocess, "run", hang)
     with pytest.raises(deploy_engine.ClusterUnreachable) as caught:
@@ -295,7 +305,9 @@ def timeout_then(probe_answers: bool, calls: list[list[str]]):
         calls.append(command)
         if "--raw=/readyz" in command:
             return Done()
-        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     return fake
 
@@ -309,7 +321,7 @@ def test_a_timeout_on_a_reachable_server_is_busy_not_unreachable(
     monkeypatch.setattr(subprocess, "run", timeout_then(True, calls))
     with pytest.raises(deploy_engine.ClusterBusy, match="reachable and not serving"):
         deploy_engine.run_helm(["history", "sample-nf"])
-    assert calls[-1][-1] == "--raw=/readyz"
+    assert "--raw=/readyz" in calls[-1]
 
 
 def test_a_timeout_with_no_readiness_answer_stays_unreachable(
@@ -319,7 +331,9 @@ def test_a_timeout_with_no_readiness_answer_stays_unreachable(
     import subprocess
 
     def hang(command: list[str], *args: object, **kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     monkeypatch.setattr(subprocess, "run", hang)
     with pytest.raises(deploy_engine.ClusterUnreachable):
@@ -337,7 +351,9 @@ def test_a_timed_out_readiness_check_does_not_probe_itself(
 
     def hang(command: list[str], *args: object, **kwargs: object) -> object:
         calls.append(command)
-        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     monkeypatch.setattr(subprocess, "run", hang)
     with pytest.raises(deploy_engine.ClusterUnreachable):
@@ -393,7 +409,9 @@ def test_a_timeout_after_a_recent_answer_is_busy(
         command: list[str], *args: object, **kwargs: object
     ) -> object:
         """Including the probe, which under queueing is just another slow call."""
-        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
     deploy_engine.run_helm(["history", "sample-nf"])  # the cluster answers us
@@ -413,7 +431,9 @@ def test_an_old_answer_is_not_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     def hang(command: list[str], *args: object, **kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     monkeypatch.setattr(subprocess, "run", hang)
     with pytest.raises(deploy_engine.ClusterUnreachable):
@@ -477,7 +497,9 @@ def test_calls_that_time_out_together_probe_once(
             with lock:
                 probes.append(command)
             return Done()
-        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED
+        )
 
     monkeypatch.setattr(subprocess, "run", fake)
 
@@ -499,3 +521,125 @@ def test_a_probe_that_does_not_answer_counts_as_slow() -> None:
         answered=True, seconds=deploy_engine.SLOW_PROBE + 0.01
     ).slow
     assert not deploy_engine.Probe(answered=True, seconds=0.05).slow
+
+
+# --- drill 11: separate the cluster's time from this host's ---
+
+RESPONSE_LOG = (
+    'I0924 10:14:50.104450   25748 round_trippers.go:632] "Response" verb="GET" '
+    'url="https://127.0.0.1:45433/readyz" status="200 OK" milliseconds=41'
+)
+
+
+def test_the_probe_reads_client_gos_own_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The line is copied from kubectl v1.36.1 at -v=6 during the drill."""
+    import subprocess
+
+    seen: list[list[str]] = []
+
+    class Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = "I0924 loader.go:407] Config loaded from file\n" + RESPONSE_LOG
+
+    def fake(command: list[str], *args: object, **kwargs: object) -> object:
+        seen.append(command)
+        return Done()
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    probe = deploy_engine.api_server_probe(max_age=0.0)
+    assert "-v=6" in seen[0]
+    assert probe.round_trip == 0.041
+    assert probe.answered and probe.started
+
+
+def test_a_fast_round_trip_is_not_slow_however_long_the_wall_time() -> None:
+    probe = deploy_engine.Probe(answered=True, seconds=1.1, round_trip=0.041)
+    assert not probe.slow
+    assert probe.local_seconds is not None and abs(probe.local_seconds - 1.059) < 1e-9
+
+
+def test_a_probe_killed_before_it_started_says_nothing_about_the_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 11: 7 of 8 probes held to 0.75s on a starved host had logged no line at all."""
+    import subprocess
+
+    def killed(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"], stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", killed)
+    probe = deploy_engine.api_server_probe(max_age=0.0)
+    assert not probe.answered and not probe.started
+    assert not probe.slow
+    assert probe.local_seconds == probe.seconds
+
+
+def test_a_probe_killed_while_waiting_on_the_cluster_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 10's case: kubectl was running and asking; the server had not answered."""
+    import subprocess
+
+    def waiting(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(
+            cmd=command[0],
+            timeout=kwargs["timeout"],
+            stderr=b"I0923 loader.go:407] Config loaded from file\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", waiting)
+    probe = deploy_engine.api_server_probe(max_age=0.0)
+    assert probe.started and probe.slow
+    assert probe.local_seconds is None
+
+
+def test_an_unreadable_log_falls_back_to_wall_time() -> None:
+    """If kubectl changes its log format, behave as on day 29 rather than going blind."""
+    assert deploy_engine.Probe(answered=True, seconds=0.9).slow
+    assert not deploy_engine.Probe(answered=True, seconds=0.1).slow
+
+
+def test_a_host_too_slow_to_start_the_probe_is_its_own_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 11: nothing logged, so the host never asked the cluster anything."""
+    import subprocess
+
+    def starved(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"], stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", starved)
+    with pytest.raises(deploy_engine.HostOverloaded, match="nothing can be said"):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_a_prompt_cluster_behind_a_slow_host_is_the_hosts_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The listing that set nf_cluster_busy on the starved host: probe fine, call late."""
+    import subprocess
+
+    monkeypatch.setattr(
+        deploy_engine,
+        "api_server_probe",
+        lambda *a, **k: deploy_engine.Probe(answered=True, seconds=1.2, round_trip=0.04),
+    )
+
+    def late(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED)
+
+    monkeypatch.setattr(subprocess, "run", late)
+    with pytest.raises(deploy_engine.HostOverloaded, match="answered its readiness probe in 40ms"):
+        deploy_engine.run_kubectl(["get", "pods"])
+
+
+def test_host_overload_is_503_with_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    def overloaded(args: list[str]) -> str:
+        raise deploy_engine.HostOverloaded("helm upgrade did not answer; this host is slow")
+
+    monkeypatch.setattr(deploy_engine, "run_helm", overloaded)
+    response = client.post("/deployments", json=VALID)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert "this host is slow" in response.json()["detail"]
