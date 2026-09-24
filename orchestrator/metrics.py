@@ -10,9 +10,9 @@ from prometheus_client.core import GaugeMetricFamily
 
 from orchestrator import reconciler
 from orchestrator.deploy import (
-    PROBE_TIMEOUT,
     ClusterBusy,
     DeployError,
+    HostOverloaded,
     Probe,
     api_server_probe,
     list_releases,
@@ -31,6 +31,12 @@ REGISTRY = CollectorRegistry()
 # Prometheus abandons it and keeps nothing.
 SCRAPE_BUDGET = float(os.environ.get("NF_SCRAPE_BUDGET", "4"))
 SCRAPE_WORKERS = int(os.environ.get("NF_SCRAPE_WORKERS", "8"))
+
+# The scrape's own probe runs beside the work rather than after a failed call, so it can be
+# given most of the budget instead of the 0.75s a timed-out call can spare. Drill 11: on a
+# starved host kubectl took ~1.1s just to start, and every probe held to 0.75s was killed
+# before it asked the cluster anything.
+SCRAPE_PROBE_TIMEOUT = float(os.environ.get("NF_SCRAPE_PROBE_TIMEOUT", "3"))
 
 deployments_total = Counter(
     "deployments_total",
@@ -75,8 +81,10 @@ def reconcile_release(
 
 
 # What a scrape learned about one release: its reconciled state, BUSY when the API server
-# was reachable but not serving us (drill 9), or None when reading it failed otherwise.
+# was reachable but not serving us (drill 9), HOST when the delay was this host's own
+# (drill 11), or None when reading it failed otherwise.
 BUSY = "busy"
+HOST = "host"
 Snapshot = dict[str, Any] | str | None
 
 
@@ -84,6 +92,8 @@ def snapshot(name: str, pods: list[dict[str, Any]] | None = None) -> Snapshot:
     """Reconcile one release, or say why it could not be read this scrape."""
     try:
         return reconcile_release(name, pods)
+    except HostOverloaded:
+        return HOST
     except ClusterBusy:
         return BUSY
     except UNAVAILABLE:
@@ -173,7 +183,10 @@ class LifecycleCollector:
         # will reuse instead of probing again.
         measured: list[Probe] = []
         prober = threading.Thread(
-            target=lambda: measured.append(api_server_probe(max_age=0.0)), daemon=True
+            target=lambda: measured.append(
+                api_server_probe(max_age=0.0, timeout=SCRAPE_PROBE_TIMEOUT)
+            ),
+            daemon=True,
         )
         prober.start()
         reachable = GaugeMetricFamily(
@@ -208,19 +221,38 @@ class LifecycleCollector:
         )
         probe_seconds = GaugeMetricFamily(
             "nf_cluster_probe_seconds",
-            "How long the API server took to answer its readiness probe this scrape",
+            "How long the API server took to answer its readiness probe this scrape, "
+            "request to response as client-go measured it",
+        )
+        probe_local = GaugeMetricFamily(
+            "nf_orchestrator_probe_local_seconds",
+            "How much of this scrape's readiness probe was spent on the orchestrator's "
+            "own host, mostly starting kubectl",
         )
 
         try:
             names = release_names()
+        except HostOverloaded:
+            # Nothing is known about the cluster, so no claim about it either way: no
+            # reachable, no busy. What is known is how slow this host is, and that is the
+            # series OrchestratorHostOverloaded pages on.
+            record_probe(prober, measured, deadline, probe_seconds, probe_local)
+            yield probe_seconds
+            yield probe_local
+            return
         except ClusterBusy:
             # Reachable, and refusing us. Not the drill-2 case — the cluster is there — but
             # no release could be listed either, so no release series: nf_cluster_busy is
             # what says why they are missing.
             reachable.add_metric([], 1.0)
             busy.add_metric([], 1.0)
+            # Drill 11's regression run: half the queueing scrapes took this path and
+            # carried no probe numbers, which is where the runbook sends you to look.
+            record_probe(prober, measured, deadline, probe_seconds, probe_local)
             yield reachable
             yield busy
+            yield probe_seconds
+            yield probe_local
             return
         except UNAVAILABLE:
             # No cluster, no answer. Report that plainly and emit no release series
@@ -251,6 +283,10 @@ class LifecycleCollector:
         throttled = False
         try:
             pods: dict[str, list[dict[str, Any]]] | None = release_pods()
+        except HostOverloaded:
+            # Drill 11: this listing was the call that ran past its bound on a starved
+            # host, and it used to set nf_cluster_busy for a cluster answering in 40ms.
+            pods = None
         except ClusterBusy:
             pods, throttled = None, True
         except UNAVAILABLE:
@@ -258,13 +294,17 @@ class LifecycleCollector:
 
         futures = reconcile_within(names, pods, deadline)
 
-        late = errored = refused = 0
+        late = errored = refused = ours = 0
         for name, future in futures.items():
             if not future.done() or future.cancelled():
                 late += 1
                 reported.add_metric([name], 0.0)
                 continue
             current = future.result()
+            if current is HOST:
+                ours += 1
+                reported.add_metric([name], 0.0)
+                continue
             if current is BUSY:
                 refused += 1
                 reported.add_metric([name], 0.0)
@@ -290,33 +330,64 @@ class LifecycleCollector:
         unreported.add_metric(["deadline"], float(late))
         unreported.add_metric(["error"], float(errored))
         unreported.add_metric(["busy"], float(refused))
+        unreported.add_metric(["host"], float(ours))
 
         # Drill 10: under queueing nothing fails. Calls just take longer than the budget,
         # every release goes unreported for reason="deadline", and a count of late
         # releases reads as "the orchestrator is short of time" — drill 7's incident,
         # whose runbook fixes nothing here. The probe is the one call whose duration means
         # something on its own, so a slow probe is what says the cause is the cluster.
-        # The probe is bounded on its own, so waiting for it here cannot outlast that
-        # bound even when the scrape has already spent its budget.
-        prober.join(timeout=PROBE_TIMEOUT)
-        probe = measured[0] if measured else None
-        if probe is not None:
-            probe_seconds.add_metric([], probe.seconds)
-        # A probe still missing after a whole scrape plus its own bound was not served
-        # promptly either, whatever it eventually says.
+        #
+        # Drill 11: a slow probe is not always a slow cluster. With the orchestrator's CPU
+        # starved and the cluster healthy, the wall time was ~1.1s and the round trip
+        # 31-80ms, and day 29 paged ClusterThrottlingOrchestrator for a cluster with
+        # nothing wrong. So the cluster is judged on the round trip, and the rest is
+        # reported as the host's.
+        #
+        # The probe started with the scrape and is bounded below the budget, so by the
+        # deadline it has finished; the grace only covers a thread scheduled late.
+        probe = record_probe(prober, measured, deadline, probe_seconds, probe_local)
+        # No probe result at all says nothing about the cluster. Day 29 counted it as busy;
+        # drill 11 showed the likeliest reason is the host being too slow to run it.
         busy.add_metric(
-            [], 1.0 if throttled or refused or probe is None or probe.slow else 0.0
+            [], 1.0 if throttled or refused or (probe is not None and probe.slow) else 0.0
         )
 
         yield reachable
         yield busy
         yield probe_seconds
+        yield probe_local
         yield unreported
         yield reported
         yield state
         yield desired
         yield ready
         yield operation
+
+
+def record_probe(
+    prober: threading.Thread,
+    measured: list[Probe],
+    deadline: float,
+    cluster_seconds: GaugeMetricFamily,
+    local_seconds: GaugeMetricFamily,
+) -> Probe | None:
+    """Wait for the scrape's probe and record what it says about each end.
+
+    The probe started with the scrape and is bounded below the budget, so by the deadline
+    it has finished; the grace only covers a thread scheduled late.
+    """
+    prober.join(timeout=max(0.0, deadline - time.monotonic()) + 0.25)
+    probe = measured[0] if measured else None
+    if probe is None:
+        return None
+    if probe.round_trip is not None:
+        cluster_seconds.add_metric([], probe.round_trip)
+    elif probe.started:
+        cluster_seconds.add_metric([], probe.seconds)
+    if probe.local_seconds is not None:
+        local_seconds.add_metric([], probe.local_seconds)
+    return probe
 
 
 REGISTRY.register(LifecycleCollector())

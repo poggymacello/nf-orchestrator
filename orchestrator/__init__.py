@@ -23,6 +23,12 @@ BUSY_RETRY_AFTER = "5"
 
 def http_error(exc: deploy_engine.DeployError) -> HTTPException:
     """503 unreachable or busy, 409 a field-ownership conflict, 502 any other refusal."""
+    if isinstance(exc, deploy_engine.HostOverloaded):
+        # The orchestrator cannot answer right now and expects to again, which is 503 with
+        # Retry-After whoever is to blame — the detail is what says it is this host.
+        return HTTPException(
+            status_code=503, detail=str(exc), headers={"Retry-After": BUSY_RETRY_AFTER}
+        )
     if isinstance(exc, deploy_engine.ClusterBusy):
         # Still 503 — the orchestrator cannot answer right now — but with Retry-After,
         # because unlike an outage this one is expected to clear on its own. Not 502:
