@@ -47,6 +47,13 @@ time — that is [scrape over budget](scrape-over-budget.md), not this runbook. 
 [cluster throttling](cluster-throttling.md). Before 2026-09-17 that case was reported here, as
 "did not answer within 3s" ([drill 9](../postmortems/2026-09-17-drill-9-the-api-server-sheds-load.md)).
 
+**`OrchestratorHostOverloaded` can fire alongside this, and both are true.** Drill 12 froze the
+control plane on a starved orchestrator host: `ClusterUnreachable` fired about 1½ minutes after the
+freeze and the host alert kept firing throughout. Work this runbook for the cluster; the host
+([its section](scrape-over-budget.md#the-orchestrators-host-is-overloaded)) slows every command the
+orchestrator runs while you do, including its view of the recovery.
+([drill 12](../postmortems/2026-09-26-drill-12-a-starved-host-and-a-frozen-cluster.md))
+
 **A cluster that has just stopped answering reads as busy for up to 30 seconds before it reads as
 unreachable.** Since 2026-09-23 a call that completed recently counts as evidence that the cluster
 is there, because an overloaded API server can be too slow to answer even its own readiness probe

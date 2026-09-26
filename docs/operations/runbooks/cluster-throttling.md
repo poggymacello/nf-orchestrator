@@ -64,6 +64,12 @@ starting kubectl
 cluster busy. The drill-10 numbers in the sample above are from before this change: they were wall
 time and included the orchestrator's own share.
 
+**The alert fires on a share of scrape attempts, not of samples.** Since 2026-09-26 it is
+`sum_over_time(nf_cluster_busy[2m]) / count_over_time(up[2m]) >= 0.5`, and never while
+`nf_cluster_reachable` is 0. Before that, the few busy samples from the first 30 seconds of a real
+outage could become the whole window once the cluster read unreachable, and drill 12 saw this alert
+go pending during an outage. If it fires with `ClusterUnreachable`, trust `ClusterUnreachable`.
+
 **Check the other end before acting on this runbook.**
 `nf_orchestrator_probe_local_seconds` is the part of the same probe spent on the orchestrator's
 machine. If that is the high number and the round trip is low, this is not throttling. Go to

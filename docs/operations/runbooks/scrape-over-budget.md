@@ -163,6 +163,10 @@ The drill's value was `1` (core 0 only). An unpinned process on this 16-thread m
 in the first scrape, about 10 seconds after the burners stopped. The alert averages over two
 minutes. **(the alert clearing was not watched to the end)**
 
+**It keeps firing through a cluster outage.** Since 2026-09-26 the host's share is also measured
+from kubectl's first log line, so it survives a server that never answers. Before that, drill 12
+watched this alert clear in the middle of an outage with the host still starved.
+
 **What does not help:** more workers (the host is already short of CPU), a bigger budget (the
 scrape timeout is fixed at 5s), or anything on the cluster.
 
