@@ -81,7 +81,10 @@ the rest were within budget). That isn't enough for `OrchestratorScrapeFailing`,
 minute of failures. The orchestrator can't make its own machine faster, and the alert that
 matters here now fires.
 
-**8. A starved host hides the cluster. Accepted, not drilled.** When the host can't start the
+**8. A starved host hides the cluster. Accepted, not drilled — retired by
+[drill 12](2026-09-26-drill-12-a-starved-host-and-a-frozen-cluster.md), which drilled it: the
+scrape's 3s probe still starts on a starved host, and the outage was reported 22–32s after each
+freeze.** Original text: When the host can't start the
 probe at all, the call raises `HostOverloaded` and says "nothing can be said about the cluster".
 That is true, and it also means a cluster that dies while the host is starved won't read as
 unreachable until the host recovers. `OrchestratorHostOverloaded` is paging during that time.
