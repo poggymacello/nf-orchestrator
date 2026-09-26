@@ -259,7 +259,13 @@ class LifecycleCollector:
             # at all: a scrape that cannot see the cluster must not be indistinguish-
             # able from a cluster with nothing deployed in it.
             reachable.add_metric([], 0.0)
+            # Drill 12: an outage and a starved host at once. The host's measurement is
+            # still true and still needed; without it OrchestratorHostOverloaded cleared in
+            # the middle of both. The probe is bounded, so waiting for it cannot outlast
+            # the scrape it started with.
+            record_probe(prober, measured, deadline, probe_seconds, probe_local)
             yield reachable
+            yield probe_local
             return
 
         unreported = GaugeMetricFamily(
