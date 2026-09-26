@@ -112,8 +112,17 @@ groups:
       # 0.25-0.80s against 0.25s idle, so the per-scrape signal flipped between 1 and 0
       # and `nf_cluster_busy == 1` never held for a whole `for:` window. The alert now
       # asks how much of the window was throttled, which a flapping signal can answer.
+      #
+      # Drill 12: avg_over_time averages only the samples that exist. During a real outage
+      # the busy series stops, the zeros from before it age out, and the few busy samples
+      # from its first 30 seconds become the whole window — this came within two seconds of
+      # paging throttling in the middle of an outage. The share is now taken over every
+      # scrape attempted (up has a sample for each, success or not), and an unreachable
+      # cluster is not a throttling one. monitoring/tests/ replays the drill's series.
       - alert: ClusterThrottlingOrchestrator
-        expr: avg_over_time(nf_cluster_busy[2m]) >= 0.5
+        expr: >-
+          (sum_over_time(nf_cluster_busy[2m]) / count_over_time(up{job="nf-orchestrator"}[2m]))
+          >= 0.5 unless on(instance, job) nf_cluster_reachable == 0
         for: 1m
         labels:
           severity: page
