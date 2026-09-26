@@ -1,0 +1,67 @@
+# Unit tests for the alert rules, fed the series the drills actually produced.
+#
+# Day 31 (drill 12): ClusterThrottlingOrchestrator came within two seconds of paging
+# "throttling" in the middle of a real outage. It averaged nf_cluster_busy over two
+# minutes, and avg_over_time averages only the samples that exist: once the cluster was
+# unreachable the busy series stopped, the pre-outage zeros aged out of the window, and six
+# busy samples from the first 30 seconds of the outage became 100% of it. No rule had been
+# evaluated against a series that disappears. These tests do that, with promtool:
+#
+#   docker run --rm -v "$PWD/monitoring:/monitoring" --entrypoint promtool #     prom/prometheus:v3.13.1 test rules /monitoring/tests/nf-lifecycle.rules.test.yml
+#
+# Expressions under promql_expr_test are copied from the rules file; a pytest pins them to
+# it, so a rule cannot change without its test noticing.
+rule_files:
+  - ../nf-lifecycle.rules.yml
+
+evaluation_interval: 5s
+
+tests:
+  # Drill 12, as measured: busy 0 for two minutes, busy 1 for the 30 seconds the orchestrator
+  # still had recent evidence of the cluster, then no busy series at all while it read
+  # unreachable. The outage page fires; the throttling page must not.
+  - interval: 5s
+    input_series:
+      - series: 'nf_cluster_busy{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '0x24 1x6 stale'
+      - series: 'nf_cluster_reachable{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x31 0x40'
+      - series: 'up{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x71'
+    alert_rule_test:
+      - eval_time: 4m30s
+        alertname: ClusterThrottlingOrchestrator
+        exp_alerts: []
+
+  # Drill 10, sustained: every scrape busy for three minutes. Pages.
+  - interval: 5s
+    input_series:
+      - series: 'nf_cluster_busy{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+      - series: 'nf_cluster_reachable{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+      - series: 'up{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+    promql_expr_test:
+      - expr: '(sum_over_time(nf_cluster_busy[2m]) / count_over_time(up{job="nf-orchestrator"}[2m])) >= 0.5 unless on(instance, job) nf_cluster_reachable == 0'
+        eval_time: 3m
+        exp_samples:
+          - labels: '{instance="orchestrator:8000",job="nf-orchestrator"}'
+            value: 1
+
+  # Drill 10, flapping: the probe hovered at its threshold and busy alternated, two scrapes
+  # in three. Day 29 moved the rule off `== 1 for 2m` because of exactly this series.
+  - interval: 5s
+    input_series:
+      - series: 'nf_cluster_busy{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0'
+      - series: 'nf_cluster_reachable{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+      - series: 'up{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+    promql_expr_test:
+      - expr: '(sum_over_time(nf_cluster_busy[2m]) / count_over_time(up{job="nf-orchestrator"}[2m])) >= 0.5 unless on(instance, job) nf_cluster_reachable == 0'
+        eval_time: 3m
+        exp_samples:
+          - labels: '{instance="orchestrator:8000",job="nf-orchestrator"}'
+            value: 0.6666666666666666
