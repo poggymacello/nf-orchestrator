@@ -643,3 +643,58 @@ def test_host_overload_is_503_with_retry_after(monkeypatch: pytest.MonkeyPatch) 
     assert response.status_code == 503
     assert response.headers["retry-after"] == "5"
     assert "this host is slow" in response.json()["detail"]
+
+
+# --- drill 12: a starved host and a frozen cluster at the same time ---
+
+
+def local_time(hour: int, minute: int, second: int, fraction: float) -> float:
+    import time
+
+    return time.mktime((2026, 9, 26, hour, minute, second, 0, 0, -1)) + fraction
+
+
+def test_the_host_share_comes_from_kubectls_first_line() -> None:
+    """kubectl logged at 15:47:11.25 for a process spawned at 15:47:10.25."""
+    spawned = local_time(15, 47, 10, 0.25)
+    log = "I0926 15:47:11.250000   4242 loader.go:407] Config loaded from file\n"
+    delay = deploy_engine.startup_delay(log, spawned)
+    assert delay is not None and abs(delay - 1.0) < 1e-6
+
+
+def test_the_host_share_survives_midnight() -> None:
+    spawned = local_time(23, 59, 59, 0.9)
+    log = "I0927 00:00:00.100000   4242 loader.go:407] Config loaded from file\n"
+    delay = deploy_engine.startup_delay(log, spawned)
+    assert delay is not None and abs(delay - 0.2) < 1e-6
+
+
+def test_no_log_line_means_no_host_share_from_it() -> None:
+    assert deploy_engine.startup_delay("", 0.0) is None
+
+
+def test_a_frozen_cluster_does_not_hide_the_hosts_share() -> None:
+    """Drill 12: killed while waiting on a frozen server, so no round trip — and the
+    host's series vanished, clearing OrchestratorHostOverloaded on a starved host."""
+    probe = deploy_engine.Probe(answered=False, seconds=3.06, startup=1.04)
+    assert probe.slow
+    assert probe.local_seconds == 1.04
+
+
+def test_a_killed_probe_records_when_kubectl_got_going(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    import time
+
+    def frozen(command: list[str], *args: object, **kwargs: object) -> object:
+        stamp = time.strftime("%H:%M:%S", time.localtime()) + ".000000"
+        line = f"I0926 {stamp}   4242 loader.go:407] Config loaded from file\n"
+        raise subprocess.TimeoutExpired(
+            cmd=command[0], timeout=kwargs["timeout"], stderr=line.encode()
+        )
+
+    monkeypatch.setattr(subprocess, "run", frozen)
+    probe = deploy_engine.api_server_probe(max_age=0.0)
+    assert probe.started and not probe.answered
+    assert probe.startup is not None and probe.startup < 1.0
