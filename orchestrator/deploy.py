@@ -71,6 +71,13 @@ ROUND_TRIP = re.compile(
     r'"Response" verb="GET" url="[^"]*/readyz" status="[^"]*" milliseconds=(\d+)'
 )
 
+# klog stamps every line with local wall-clock time to the microsecond, and kubectl writes
+# its first line as soon as it has loaded its config. So the first stamp, minus when the
+# process was spawned, is how long this host took to get kubectl going — measurable even
+# when the server never answers. Drill 12: 0.05-0.08s idle, 0.97-1.20s on a starved host
+# with the control plane frozen, where there is no round trip to subtract.
+FIRST_LINE = re.compile(r"^[IWEF]\d{4} (\d{2}):(\d{2}):(\d{2})\.(\d{6})", re.MULTILINE)
+
 # How long a successful call keeps counting as evidence that the cluster is there. Under
 # queueing the probe is often too slow to answer inside PROBE_TIMEOUT, which on its own
 # looked exactly like drill 7's stalled server — while other calls were still completing.
@@ -162,6 +169,7 @@ class Probe:
     seconds: float
     round_trip: float | None = None
     started: bool = True
+    startup: float | None = None
 
     @property
     def slow(self) -> bool:
@@ -182,12 +190,19 @@ class Probe:
 
     @property
     def local_seconds(self) -> float | None:
-        """How much of the probe was spent on this host, when that can be said."""
+        """How much of the probe was spent on this host, when that can be said.
+
+        With a round trip, everything else. Without one, how long kubectl took to write
+        its first line — a lower bound, but one that survives a server that never answers.
+        Drill 12 froze the control plane on a starved host: there was no round trip, this
+        returned None, the host's series disappeared, and OrchestratorHostOverloaded
+        cleared while the host was as starved as before.
+        """
         if self.round_trip is not None:
             return max(0.0, self.seconds - self.round_trip)
         if not self.started:
             return self.seconds
-        return None
+        return self.startup
 
 
 _probe_lock = threading.Lock()
@@ -230,6 +245,7 @@ def api_server_probe(max_age: float = PROBE_TTL, timeout: float | None = None) -
 
 
 def _measure_probe(timeout: float) -> Probe:
+    spawned = time.time()
     started = time.monotonic()
     try:
         result = subprocess.run(
@@ -248,6 +264,7 @@ def _measure_probe(timeout: float) -> Probe:
             seconds=time.monotonic() - started,
             round_trip=_round_trip(partial),
             started=bool(partial.strip()),
+            startup=startup_delay(partial, spawned),
         )
     except OSError:
         return Probe(answered=False, seconds=time.monotonic() - started, started=False)
@@ -258,7 +275,30 @@ def _measure_probe(timeout: float) -> Probe:
         answered=answered,
         seconds=time.monotonic() - started,
         round_trip=_round_trip(result.stderr or ""),
+        startup=startup_delay(result.stderr or "", spawned),
     )
+
+
+def startup_delay(log: str, spawned: float) -> float | None:
+    """Seconds from spawning kubectl to its first log line, or None without one.
+
+    Compared as seconds of the local day, because that is all a klog stamp carries. Both
+    ends come from the same machine's clock; a difference that wraps midnight is folded
+    back, and one that comes out fractionally negative from clock granularity is zero.
+    """
+    match = FIRST_LINE.search(log)
+    if match is None:
+        return None
+    hour, minute, second, micros = map(int, match.groups())
+    first = hour * 3600 + minute * 60 + second + micros / 1e6
+    local = time.localtime(spawned)
+    at_spawn = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec + spawned % 1
+    delay = first - at_spawn
+    if delay < -43200:
+        delay += 86400
+    elif delay > 43200:
+        delay -= 86400
+    return max(0.0, delay)
 
 
 def _round_trip(log: str) -> float | None:

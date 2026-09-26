@@ -31,6 +31,12 @@ jobs:
       - run: ruff check .
       # The e2e tests skip themselves without NF_E2E, so this stays a no-cluster run.
       - run: pytest
+      # The alert rules, evaluated against series the drills produced (drill 12 found a rule
+      # that had only ever been read, never run). Same image as the drills, pinned.
+      - name: Alert rules
+        run: |
+          docker run --rm -v "$PWD/monitoring:/monitoring" --entrypoint promtool             prom/prometheus@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893             check rules /monitoring/nf-lifecycle.rules.yml
+          docker run --rm -v "$PWD/monitoring:/monitoring" --entrypoint promtool             prom/prometheus@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893             test rules /monitoring/tests/nf-lifecycle.rules.test.yml
 
   # Secret scanning over the whole history, not just the diff: a secret committed
   # three months ago and deleted since is still in the pack file.

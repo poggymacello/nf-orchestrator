@@ -35,10 +35,12 @@ anything non-public.
 
 ## CI gates
 
-CI is two jobs, and triggers on every branch push as well as on pull requests.
+CI is five jobs, and triggers on every branch push as well as on pull requests.
 
-- **`lint-test`** runs `ruff check .` and `pytest`. No cluster: the end-to-end tests skip
-  themselves unless `NF_E2E=1`.
+- **`lint-test`** runs `ruff check .` and `pytest`, then promtool over the alert rules: `check
+  rules`, and `test rules` against the series the drills produced (`monitoring/tests/`, day 31,
+  [ADR-0019](docs/design/adr/0019-alert-rules-are-tested-against-drill-series.md)). No cluster: the
+  end-to-end tests skip themselves unless `NF_E2E=1`.
 - **`e2e`** (M5) creates a kind cluster with Helm 4 pinned, then runs `pytest tests/e2e`, which
   asserts the ground the M4 failure drills covered by hand — a deploy reaching `INSTANTIATED`,
   drift outside Helm showing as a shortfall, a conflicting resubmit refused with `409`, repair

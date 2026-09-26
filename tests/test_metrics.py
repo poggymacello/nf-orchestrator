@@ -600,3 +600,23 @@ def test_a_throttled_listing_still_reports_the_probe(monkeypatch: pytest.MonkeyP
     body = client.get("/metrics").text
     assert "nf_cluster_busy 1.0" in body
     assert "nf_cluster_probe_seconds 1.5" in body
+
+
+def test_a_frozen_cluster_on_a_starved_host_still_reports_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 12: the cluster is unreachable and the host is starved. Both are true, and
+    the scrape must say both — not let the outage erase the host's measurement."""
+
+    def unreachable() -> list[str]:
+        raise deploy_engine.ClusterUnreachable("helm list did not answer within 3s")
+
+    monkeypatch.setattr(metrics, "release_names", unreachable)
+    monkeypatch.setattr(
+        metrics,
+        "api_server_probe",
+        lambda **kwargs: deploy_engine.Probe(answered=False, seconds=3.06, startup=1.04),
+    )
+    body = client.get("/metrics").text
+    assert "nf_cluster_reachable 0.0" in body
+    assert "nf_orchestrator_probe_local_seconds 1.04" in body
