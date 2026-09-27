@@ -78,6 +78,13 @@ ROUND_TRIP = re.compile(
 # with the control plane frozen, where there is no round trip to subtract.
 FIRST_LINE = re.compile(r"^[IWEF]\d{4} (\d{2}):(\d{2}):(\d{2})\.(\d{6})", re.MULTILINE)
 
+# When a probe held to PROBE_TIMEOUT never got kubectl started, it has only said that this
+# host is slow. It is asked once more with this bound before anything is concluded. Drill 13:
+# with nothing scraping (so no scrape probe warm in the cache), every status call on a starved
+# host said "the delay is the orchestrator's own host, not the cluster" — through a real
+# outage. The same bound as the scrape's own probe, which starts even on that host.
+ESCALATED_PROBE_TIMEOUT = float(os.environ.get("NF_ESCALATED_PROBE_TIMEOUT", "3"))
+
 # How long a successful call keeps counting as evidence that the cluster is there. Under
 # queueing the probe is often too slow to answer inside PROBE_TIMEOUT, which on its own
 # looked exactly like drill 7's stalled server — while other calls were still completing.
@@ -170,6 +177,7 @@ class Probe:
     round_trip: float | None = None
     started: bool = True
     startup: float | None = None
+    error: str = ""
 
     @property
     def slow(self) -> bool:
@@ -237,7 +245,10 @@ def api_server_probe(max_age: float = PROBE_TTL, timeout: float | None = None) -
     global _probe
     with _probe_lock:
         cached = _probe
-        if cached is not None and time.monotonic() - cached[0] <= max_age:
+        # max_age <= 0 means measure now. Not `age <= 0`: on Windows the monotonic clock
+        # ticks every ~15ms, so an answer from the same tick has age 0, and drill 13's
+        # escalation got back the very probe it was asking to replace.
+        if cached is not None and max_age > 0 and time.monotonic() - cached[0] <= max_age:
             return cached[1]
         measured = _measure_probe(PROBE_TIMEOUT if timeout is None else timeout)
         _probe = (time.monotonic(), measured)
@@ -276,6 +287,16 @@ def _measure_probe(timeout: float) -> Probe:
         seconds=time.monotonic() - started,
         round_trip=_round_trip(result.stderr or ""),
         startup=startup_delay(result.stderr or "", spawned),
+        error="" if answered else _error_text(result.stderr or ""),
+    )
+
+
+def _error_text(log: str) -> str:
+    """kubectl's own error message: the stderr lines that are not klog lines."""
+    return "\n".join(
+        line.strip()
+        for line in log.splitlines()
+        if line.strip() and not FIRST_LINE.match(line)
     )
 
 
@@ -326,8 +347,7 @@ def run_bounded(command: list[str], args: list[str], timeout: float) -> str:
             local = local_delay()
             if local:
                 raise HostOverloaded(
-                    f"{verb} did not answer within {timeout:g}s, and {local}: the delay "
-                    "is the orchestrator's own host, not the cluster"
+                    f"{verb} did not answer within {timeout:g}s, and {local}"
                 ) from exc
             evidence = reachability_evidence()
             if evidence:
@@ -356,7 +376,7 @@ def reachability_evidence() -> str:
     serving everything else — the shape queueing takes. Neither is true of drills 2, 6
     and 7, where nothing answered at all.
     """
-    if api_server_probe().answered:
+    if settled_probe().answered:
         return "the API server answers its readiness probe"
     if answered_recently():
         return "the cluster answered another call moments ago"
@@ -372,20 +392,36 @@ def local_delay() -> str:
     nothing about the cluster at all — which is exactly why it must not be called busy or
     unreachable; OrchestratorHostOverloaded is what should be paging.
     """
-    probe = api_server_probe()
+    probe = settled_probe()
     if not probe.started:
         return (
-            f"this host could not start its readiness probe within {probe.seconds:.2f}s, "
-            "so nothing can be said about the cluster"
+            f"this host could not start its readiness probe within {probe.seconds:.2f}s: "
+            "it is too overloaded to tell whether the cluster is answering"
         )
     local = probe.local_seconds
     if probe.answered and not probe.slow and local is not None and local >= SLOW_PROBE:
         assert probe.round_trip is not None
         return (
             f"the API server answered its readiness probe in "
-            f"{probe.round_trip * 1000:.0f}ms while this host took {local:.2f}s to run it"
+            f"{probe.round_trip * 1000:.0f}ms while this host took {local:.2f}s to run it: "
+            "the delay is this host's, not the cluster's"
         )
     return ""
+
+
+def settled_probe() -> Probe:
+    """The cached probe, or — if it never got kubectl started — one asked with more time.
+
+    A probe that never started says only that this host is slow, which is not an answer to
+    anything a caller asked. Drill 13 froze the cluster on a starved host with nothing
+    scraping: the 0.75s probe never started, and the orchestrator blamed itself for an
+    outage. Given 3s, kubectl starts on that host (drill 12 measured ~1.1s) and reaches the
+    frozen server, and the ordinary evidence can decide.
+    """
+    probe = api_server_probe()
+    if probe.started:
+        return probe
+    return api_server_probe(max_age=0.0, timeout=ESCALATED_PROBE_TIMEOUT)
 
 
 def api_server_answers() -> bool:
@@ -417,8 +453,25 @@ def run_kubectl(args: list[str]) -> str:
 
 
 def check_cluster() -> str:
-    """Raise ClusterUnreachable unless the API server answers its own readyz probe."""
-    return run_kubectl(READYZ).strip()
+    """Raise unless the API server answers its own readyz probe, and say whose fault it is.
+
+    One kubectl, at -v=6, so a failure can be told apart: refused or otherwise answered with
+    an error (the cluster's reply, classified as any other), started and never answered (the
+    cluster is not answering), or never started at all (this host). Drill 13: run as a plain
+    call, a starved host with a healthy cluster made this route say the cluster was
+    unreachable.
+    """
+    probe = api_server_probe(max_age=0.0, timeout=READ_TIMEOUT)
+    if probe.answered:
+        return "ok"
+    if probe.error:
+        raise classify_error(probe.error)
+    if not probe.started:
+        raise HostOverloaded(
+            f"kubectl get did not start within {READ_TIMEOUT:g}s: this host is too "
+            "overloaded to tell whether the cluster is answering"
+        )
+    raise ClusterUnreachable(f"kubectl get did not answer within {READ_TIMEOUT:g}s")
 
 
 LIST_PAGE = 256
