@@ -83,6 +83,14 @@ It stays green with the entire cluster down, deliberately.
 `/readyz` is the one that answers this question. `503` there confirms the orchestrator cannot reach
 the cluster; `200` means the problem is elsewhere and this is not your runbook.
 
+**Unless the detail names the host.** A `503` with `Retry-After` that says *kubectl get did not start
+within 3s: this host is too overloaded to tell whether the cluster is answering* means the
+orchestrator's own machine couldn't run the check. That says nothing either way about the cluster —
+go to [the orchestrator's host is overloaded](scrape-over-budget.md#the-orchestrators-host-is-overloaded)
+first. Before 2026-09-27 this case read as `kubectl get did not answer within 3s`, the same words as a
+dead cluster, and [drill 13](../postmortems/2026-09-27-drill-13-with-nothing-scraping.md) saw it
+with the cluster healthy.
+
 ## 2. Confirm the cluster is the problem
 
 ```bash

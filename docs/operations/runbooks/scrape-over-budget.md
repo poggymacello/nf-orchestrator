@@ -117,7 +117,15 @@ existed.
 ## The orchestrator's host is overloaded
 
 **Use when:** `OrchestratorHostOverloaded` is firing, `reason="host"` is non-zero, or a `503` detail
-says *the delay is the orchestrator's own host, not the cluster*.
+says *the delay is this host's, not the cluster's* or *this host is too overloaded to tell whether
+the cluster is answering*.
+
+The two wordings are different findings. The first comes with both measurements — the API server's
+round trip and this host's time — and means the cluster is fine. The second means the orchestrator
+couldn't start kubectl even with 3s to do it, so it can't say anything about the cluster; if you
+also suspect the cluster, check it from another machine. Since 2026-09-27 a `503` on a starved host
+takes 7–10s, because the orchestrator asks a second time before concluding either
+([drill 13](../postmortems/2026-09-27-drill-13-with-nothing-scraping.md)).
 
 Every step here was run during
 [drill 11](../postmortems/2026-09-24-drill-11-the-orchestrator-host-is-starved.md) on 2026-09-24,
