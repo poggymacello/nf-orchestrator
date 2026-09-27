@@ -610,7 +610,7 @@ def test_a_host_too_slow_to_start_the_probe_is_its_own_503(
         raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"], stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", starved)
-    with pytest.raises(deploy_engine.HostOverloaded, match="nothing can be said"):
+    with pytest.raises(deploy_engine.HostOverloaded, match="too overloaded to tell"):
         deploy_engine.run_helm(["history", "sample-nf"])
 
 
@@ -698,3 +698,159 @@ def test_a_killed_probe_records_when_kubectl_got_going(
     probe = deploy_engine.api_server_probe(max_age=0.0)
     assert probe.started and not probe.answered
     assert probe.startup is not None and probe.startup < 1.0
+
+
+
+# --- drill 13: nothing scraping, so nothing warm in the probe cache ---
+
+
+def probes_in_order(*answers: object) -> tuple[list[object], object]:
+    """A fake api_server_probe that hands out answers in order and records each request."""
+    asked: list[object] = []
+    queue = list(answers)
+
+    def fake(max_age: float = 2.0, timeout: float | None = None) -> object:
+        asked.append(timeout)
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return asked, fake
+
+
+def test_a_probe_that_never_started_is_asked_again_with_more_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked, fake = probes_in_order(
+        deploy_engine.Probe(answered=False, seconds=0.8, started=False),
+        deploy_engine.Probe(answered=False, seconds=3.1, startup=1.1),
+    )
+    monkeypatch.setattr(deploy_engine, "api_server_probe", fake)
+    probe = deploy_engine.settled_probe()
+    assert probe.started
+    assert asked == [None, deploy_engine.ESCALATED_PROBE_TIMEOUT]
+
+
+def test_a_probe_that_started_is_not_asked_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked, fake = probes_in_order(deploy_engine.Probe(answered=True, seconds=0.1))
+    monkeypatch.setattr(deploy_engine, "api_server_probe", fake)
+    deploy_engine.settled_probe()
+    assert asked == [None]
+
+
+def test_a_frozen_cluster_behind_a_starved_host_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 13, measured: before, "the delay is the orchestrator's own host, not the
+    cluster", 48 seconds into a real outage."""
+    import subprocess
+
+    def frozen_and_starved(command: list[str], *args: object, **kwargs: object) -> object:
+        # Held to 0.75s, kubectl never starts; given 3s it starts and waits on the server.
+        log = STARTED if kwargs["timeout"] >= deploy_engine.ESCALATED_PROBE_TIMEOUT else b""
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"], stderr=log)
+
+    monkeypatch.setattr(subprocess, "run", frozen_and_starved)
+    with pytest.raises(deploy_engine.ClusterUnreachable):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_a_healthy_cluster_behind_a_starved_host_is_the_hosts_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _asked, fake = probes_in_order(
+        deploy_engine.Probe(answered=False, seconds=0.8, started=False),
+        deploy_engine.Probe(answered=True, seconds=1.2, round_trip=0.04),
+    )
+    monkeypatch.setattr(deploy_engine, "api_server_probe", fake)
+    import subprocess
+
+    def late(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"], stderr=STARTED)
+
+    monkeypatch.setattr(subprocess, "run", late)
+    with pytest.raises(deploy_engine.HostOverloaded, match="this host's, not the cluster's"):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_the_readiness_check_blames_a_host_that_could_not_start_kubectl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 13: a healthy cluster, a starved host, and /readyz said unreachable."""
+    import subprocess
+
+    def starved(command: list[str], *args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=command[0], timeout=kwargs["timeout"], stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", starved)
+    with pytest.raises(deploy_engine.HostOverloaded, match="did not start within"):
+        deploy_engine.check_cluster()
+
+
+def test_the_readiness_check_passes_on_the_clusters_own_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 13's stopped node: kubectl's error, not a klog line, is what gets classified."""
+    import subprocess
+
+    class Refused:
+        returncode = 1
+        stdout = ""
+        stderr = (
+            "I0927 09:23:25.000000   4242 loader.go:407] Config loaded from file\n"
+            "Unable to connect to the server: dial tcp 127.0.0.1:45435: connectex: No "
+            "connection could be made because the target machine actively refused it.\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Refused())
+    with pytest.raises(deploy_engine.ClusterUnreachable) as caught:
+        deploy_engine.check_cluster()
+    assert str(caught.value).startswith("Unable to connect to the server")
+
+
+def test_the_readiness_check_is_ok_when_the_server_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    class Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+    assert deploy_engine.check_cluster() == "ok"
+
+
+def test_host_overload_on_readyz_is_503_with_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def starved() -> str:
+        raise deploy_engine.HostOverloaded("kubectl get did not start within 3s")
+
+    monkeypatch.setattr(deploy_engine, "check_cluster", starved)
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+
+
+def test_max_age_zero_always_measures_even_within_one_clock_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    import time
+
+    runs: list[float] = []
+
+    class Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def counted(*args: object, **kwargs: object) -> object:
+        runs.append(kwargs["timeout"])
+        return Done()
+
+    monkeypatch.setattr(subprocess, "run", counted)
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)  # the clock does not move
+    deploy_engine.api_server_probe(max_age=0.0)
+    deploy_engine.api_server_probe(max_age=0.0)
+    assert len(runs) == 2
