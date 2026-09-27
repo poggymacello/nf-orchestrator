@@ -3,7 +3,7 @@
 [![CI](https://github.com/poggymacello/nf-orchestrator/actions/workflows/ci.yaml/badge.svg)](https://github.com/poggymacello/nf-orchestrator/actions/workflows/ci.yaml)
 
 Takes a declarative intent, validates it, deploys a network function with Helm onto Kubernetes, and
-reports its lifecycle state from live cluster signals — plus twelve failure drills that each proved
+reports its lifecycle state from live cluster signals — plus thirteen failure drills that each proved
 the reporting wrong, and the fixes that followed.
 
 This is a **self-directed learning project**: a generic re-implementation, built only from public
@@ -90,7 +90,7 @@ $ curl -s -X DELETE localhost:8000/deployments/sample-nf
 
 ## The part worth three minutes: the failure drills
 
-Twelve deliberate failure drills were run, each with the expected behaviour written down first, a
+Thirteen deliberate failure drills were run, each with the expected behaviour written down first, a
 blameless postmortem from the captured output, fixes verified by re-running the drill, and runbooks
 corrected when a drill proved them wrong. Every one found the orchestrator — or the monitoring around
 it — reporting something false.
@@ -109,8 +109,9 @@ it — reporting something false.
 | [10 — the API server queues instead of refusing](docs/operations/postmortems/2026-09-23-drill-10-the-api-server-queues-instead-of-refusing.md) | The same flow control set to **queue** instead of reject: nothing failed, so nothing said the cluster was throttling — every release went unreported as though the orchestrator were simply too slow, and the readiness probe that drill 9's fix depends on was itself too slow to answer |
 | [11 — the orchestrator's host is starved](docs/operations/postmortems/2026-09-24-drill-11-the-orchestrator-host-is-starved.md) | The cluster was fine and the orchestrator's own CPU was starved — and it **paged that the cluster was throttling it**, because every duration it measured included starting kubectl on its own machine. The cause itself had no alert |
 | [12 — a starved host and a frozen cluster](docs/operations/postmortems/2026-09-26-drill-12-a-starved-host-and-a-frozen-cluster.md) | Both at once. The outage page fired — but the host's alert **cleared mid-outage**, and the throttling alert came **within two seconds of paging during a real outage**, because `avg_over_time` averages only the samples that are left. No alert rule had ever been run by a test |
+| [13 — the same outage, with nothing scraping](docs/operations/postmortems/2026-09-27-drill-13-with-nothing-scraping.md) | Drill 12's status route had only been right because Prometheus kept a probe warm. Without it, the route **blamed the orchestrator's own host for a real outage** — and `/readyz` called a **healthy** cluster unreachable. Each was wrong exactly where the other was right |
 
-49 findings. Every defect is fixed and re-verified; nine are limits, accepted and written down —
+54 findings. Every defect is fixed and re-verified; ten are limits, accepted and written down —
 one more was accepted and then drilled, and turned out to be false.
 Drills 1-3 were one mistake in four places: two things that are usually equal, collapsed into a
 single value, diverging only during an incident — pod phase versus container readiness,
@@ -140,10 +141,11 @@ Recorded as ADRs with the alternatives that were rejected and why —
 | [0017](docs/design/adr/0017-reachability-needs-more-than-one-witness.md) | Reachability needs two witnesses, and how long the readiness probe took is one of the measurements |
 | [0018](docs/design/adr/0018-the-probe-measures-two-ends.md) | The probe measures two ends — the cluster's round trip and this host's share — and a slow host is its own failure, not the cluster's |
 | [0019](docs/design/adr/0019-alert-rules-are-tested-against-drill-series.md) | Alert rules are unit-tested with promtool in CI, fed the series the drills produced — including one that stops |
+| [0020](docs/design/adr/0020-an-inconclusive-probe-is-asked-again.md) | A probe that never started is asked again with more time, not believed — and `/readyz` is the probe |
 
 ## Tests and CI
 
-203 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
+212 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
 five jobs on every branch push: `lint-test` with no cluster, including promtool tests that replay
 the drills' series against the alert rules; `secret-scan` (Gitleaks over the full
 history); `banned-terms` (private terms, from a secret, never printed); `vuln-scan` (Trivy over the
@@ -188,7 +190,7 @@ Status per milestone: [`docs/milestone-map.md`](docs/milestone-map.md).
 
 | | |
 |---|---|
-| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 18 ADRs |
+| [Design](docs/design/) | Problem statement, architecture, the lifecycle state model, and 19 ADRs |
 | [Operations](docs/operations/README.md) | Failure drills, postmortems, runbooks, alerting |
 | [Build log](docs/build-log/) | Per-milestone: what was set out to do, what broke, what was learned |
 | [Daily log](docs/daily-log/) | A dated record of every working day on this project |
