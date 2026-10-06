@@ -47,9 +47,10 @@ a single series in six minutes. Do not wait for them to "come round".
 - `reason="host"` — the call ran long on the orchestrator's own machine while the cluster answered
   promptly. Go to [the orchestrator's host is overloaded](#the-orchestrators-host-is-overloaded).
   `reason="deadline"` alongside `OrchestratorHostOverloaded` means the same thing.
-- `reason="error"` — reading that release failed while the others succeeded. The drill produced no
-  errors, so this branch is covered by a unit test only **(not drilled)**. Read the release directly
-  and the error comes back in the response:
+- `reason="error"` — reading that release failed while the others succeeded. Before 2026-10-06
+  this is also where a host out of threads landed: drill 14 had 8 of 10 releases here at a pids
+  limit of 30, and reading any one directly worked, because a single call fit under the limit. That
+  case is now `reason="host"`. Read the release directly and the error comes back in the response:
 
 ```bash
 curl -s -w ' http=%{http_code}' localhost:8000/deployments/<release>
@@ -174,6 +175,42 @@ minutes. **(the alert clearing was not watched to the end)**
 **It keeps firing through a cluster outage.** Since 2026-09-26 the host's share is also measured
 from kubectl's first log line, so it survives a server that never answers. Before that, drill 12
 watched this alert clear in the middle of an outage with the host still starved.
+
+### When the host cannot start threads at all
+
+**Use when:** `nf_orchestrator_exhausted` is 1, or a `503` detail says *this host could not start
+the threads helm or kubectl need* or *could not start a thread to serve the request*.
+
+This is not slowness: processes start and then die, so `nf_orchestrator_probe_local_seconds` can
+look healthy. It is a pids or memory limit on the orchestrator's own machine, and it was measured in
+[drill 14](../postmortems/2026-10-06-drill-14-a-host-that-cannot-start-threads.md) with the
+orchestrator in a container. Inside that container:
+
+```bash
+cat /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.peak /sys/fs/cgroup/pids.events
+```
+
+```
+15
+7
+57
+max 933
+```
+
+`pids.events` counts how often the limit was hit. Linux counts **threads** against `pids.max`, and
+helm and kubectl are Go programs that start about ten each. A ten-release scrape at the default 8
+workers peaked at **57–96** pids in the drill.
+
+**Raise the limit to cover the peak, or lower the concurrency:** `NF_SCRAPE_WORKERS` bounds how
+many helm calls run at once, and each needs roughly ten pids. In a container:
+
+```bash
+docker update --pids-limit 200 <container>
+```
+
+In the drill, removing the limit brought `nf_orchestrator_exhausted` back to 0, with every release
+reported, at the next scrape. In Kubernetes the equivalent is the kubelet's pod pids limit, which
+can't be changed from inside the pod. **(the Kubernetes path not drilled)**
 
 **What does not help:** more workers (the host is already short of CPU), a bigger budget (the
 scrape timeout is fixed at 5s), or anything on the cluster.

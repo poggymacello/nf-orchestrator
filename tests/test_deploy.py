@@ -854,3 +854,101 @@ def test_max_age_zero_always_measures_even_within_one_clock_tick(
     deploy_engine.api_server_probe(max_age=0.0)
     deploy_engine.api_server_probe(max_age=0.0)
     assert len(runs) == 2
+
+
+# --- drill 14: this host cannot start the processes and threads the calls need ---
+
+# helm v4.2.2's stderr inside a container at --pids-limit 15, first lines verbatim.
+NEWOSPROC = (
+    "runtime: failed to create new OS thread (have 10 already; errno=11)\n"
+    "runtime: may need to increase max user processes (ulimit -u)\n"
+    "fatal error: newosproc\n\n"
+    "runtime stack:\n"
+    "runtime.throw({0x2693c93?, 0x312b9fc49dd0?})\n"
+    "\t/usr/local/go/src/runtime/panic.go:1094 +0x48\n"
+) + "goroutine 1 [running]:\n" * 200
+
+
+def test_the_go_runtime_running_out_of_threads_is_the_hosts_fault() -> None:
+    error = deploy_engine.classify_error(NEWOSPROC)
+    assert isinstance(error, deploy_engine.HostExhausted)
+    assert isinstance(error, deploy_engine.HostOverloaded)
+    assert "failed to create new OS thread" in str(error)
+
+
+def test_the_go_stack_does_not_reach_the_caller() -> None:
+    """Drill 14's 502 carried 18,933 bytes of runtime stack in its detail."""
+    message = str(deploy_engine.classify_error(NEWOSPROC))
+    assert "runtime stack" not in message
+    assert len(message) < 300
+
+
+def test_a_helm_that_crashes_for_threads_raises_host_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    class Crashed:
+        returncode = 2
+        stdout = ""
+        stderr = NEWOSPROC
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Crashed())
+    with pytest.raises(deploy_engine.HostExhausted):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_host_exhaustion_is_503_with_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before: 502, documented as "the cluster answered and refused"."""
+
+    def crashed(args: list[str]) -> str:
+        raise deploy_engine.classify_error(NEWOSPROC)
+
+    monkeypatch.setattr(deploy_engine, "run_helm", crashed)
+    response = client.post("/deployments", json=VALID)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+
+
+def test_the_readiness_check_names_a_host_out_of_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    class Crashed:
+        returncode = 2
+        stdout = ""
+        stderr = NEWOSPROC
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Crashed())
+    with pytest.raises(deploy_engine.HostExhausted):
+        deploy_engine.check_cluster()
+
+
+def test_a_probe_knows_when_kubectl_could_not_start_its_threads() -> None:
+    assert deploy_engine.Probe(answered=False, seconds=0.05, error=NEWOSPROC).exhausted
+    assert not deploy_engine.Probe(answered=False, seconds=0.05, error="refused").exhausted
+
+
+def test_a_route_that_cannot_get_a_thread_is_503_not_a_bare_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 14: five of six concurrent calls got Starlette's bare 500."""
+
+    def no_thread() -> str:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(deploy_engine, "check_cluster", no_thread)
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert "could not start a thread" in response.json()["detail"]
+
+
+def test_any_other_runtime_error_is_still_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken() -> str:
+        raise RuntimeError("something else entirely")
+
+    monkeypatch.setattr(deploy_engine, "check_cluster", broken)
+    with pytest.raises(RuntimeError, match="something else entirely"):
+        client.get("/readyz")
