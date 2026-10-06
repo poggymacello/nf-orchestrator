@@ -141,8 +141,16 @@ groups:
       # ClusterThrottlingOrchestrator and sent someone to check API Priority and Fairness
       # on a cluster with nothing wrong. The host's share of the probe now has its own
       # series and its own alert, pointing at the orchestrator's machine instead.
+      #
+      # Drill 14: a host under a pids limit is not slow. Its processes start, crash at once
+      # for want of threads, and leave its share of the probe near zero, so the first half
+      # of this rule never saw it. The second half fires on the share of scrape attempts
+      # that could not start what they needed. A quarter is a judgment: the drill sat at
+      # every scrape, at both limits it tried.
       - alert: OrchestratorHostOverloaded
-        expr: avg_over_time(nf_orchestrator_probe_local_seconds[2m]) >= 0.5
+        expr: >-
+          avg_over_time(nf_orchestrator_probe_local_seconds[2m]) >= 0.5
+          or (sum_over_time(nf_orchestrator_exhausted[2m]) / count_over_time(up{job="nf-orchestrator"}[2m])) >= 0.25
         for: 1m
         labels:
           severity: warning
@@ -152,5 +160,7 @@ groups:
             Starting kubectl on the orchestrator's host is taking most of every cluster call,
             while the API server itself answers promptly (nf_cluster_probe_seconds). Scrapes
             run late and releases go unreported for reason="deadline" because of this machine,
-            not the cluster. Do not change anything on the cluster — follow
-            runbooks/scrape-over-budget.md, "The orchestrator's host is overloaded".
+            not the cluster. Or this host could not start the processes and threads its calls
+            need at all (nf_orchestrator_exhausted): a pids or memory limit. Do not change
+            anything on the cluster — follow runbooks/scrape-over-budget.md, "The
+            orchestrator's host is overloaded".
