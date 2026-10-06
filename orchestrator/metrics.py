@@ -12,6 +12,7 @@ from orchestrator import reconciler
 from orchestrator.deploy import (
     ClusterBusy,
     DeployError,
+    HostExhausted,
     HostOverloaded,
     Probe,
     api_server_probe,
@@ -82,9 +83,11 @@ def reconcile_release(
 
 # What a scrape learned about one release: its reconciled state, BUSY when the API server
 # was reachable but not serving us (drill 9), HOST when the delay was this host's own
-# (drill 11), or None when reading it failed otherwise.
+# (drill 11), EXHAUSTED when this host could not start the process or thread at all
+# (drill 14), or None when reading it failed otherwise.
 BUSY = "busy"
 HOST = "host"
+EXHAUSTED = "exhausted"
 Snapshot = dict[str, Any] | str | None
 
 
@@ -92,6 +95,8 @@ def snapshot(name: str, pods: list[dict[str, Any]] | None = None) -> Snapshot:
     """Reconcile one release, or say why it could not be read this scrape."""
     try:
         return reconcile_release(name, pods)
+    except HostExhausted:
+        return EXHAUSTED
     except HostOverloaded:
         return HOST
     except ClusterBusy:
@@ -134,9 +139,7 @@ def reconcile_within(
             batch, queue = queue[:wave], queue[wave:]
             started = time.monotonic()
             batch_futures = {
-                name: pool.submit(
-                    snapshot, name, None if pods is None else pods.get(name, [])
-                )
+                name: submit(pool, name, None if pods is None else pods.get(name, []))
                 for name in batch
             }
             futures.update(batch_futures)
@@ -152,6 +155,22 @@ def reconcile_within(
     for name in queue:
         futures.setdefault(name, _never_started())
     return futures
+
+
+def submit(
+    pool: ThreadPoolExecutor, name: str, pods: list[dict[str, Any]] | None
+) -> Future[Snapshot]:
+    """Start reconciling one release, or record that this host could not start a thread.
+
+    Drill 14: under a pids limit the Linux kernel counts threads, and starting a worker
+    raises RuntimeError. Uncaught, it would take the whole scrape down with it.
+    """
+    try:
+        return pool.submit(snapshot, name, pods)
+    except RuntimeError:
+        settled: Future[Snapshot] = Future()
+        settled.set_result(EXHAUSTED)
+        return settled
 
 
 def _never_started() -> Future[Snapshot]:
@@ -188,7 +207,13 @@ class LifecycleCollector:
             ),
             daemon=True,
         )
-        prober.start()
+        exhausted = False
+        started_prober: threading.Thread | None = prober
+        try:
+            prober.start()
+        except RuntimeError:
+            # Drill 14: not even one thread to measure with. That is itself the finding.
+            started_prober, exhausted = None, True
         reachable = GaugeMetricFamily(
             "nf_cluster_reachable",
             "1 when the orchestrator could reach the cluster during this scrape",
@@ -229,16 +254,28 @@ class LifecycleCollector:
             "How much of this scrape's readiness probe was spent on the orchestrator's "
             "own host, mostly starting kubectl",
         )
+        out_of_capacity = GaugeMetricFamily(
+            "nf_orchestrator_exhausted",
+            "1 when this scrape could not start a process or thread it needed: a pids or "
+            "memory limit on the orchestrator's own host",
+        )
 
         try:
             names = release_names()
-        except HostOverloaded:
+        except HostOverloaded as exc:
             # Nothing is known about the cluster, so no claim about it either way: no
             # reachable, no busy. What is known is how slow this host is, and that is the
             # series OrchestratorHostOverloaded pages on.
-            record_probe(prober, measured, deadline, probe_seconds, probe_local)
+            probe = record_probe(
+                started_prober, measured, deadline, probe_seconds, probe_local
+            )
+            exhausted = exhausted or isinstance(exc, HostExhausted) or bool(
+                probe and probe.exhausted
+            )
+            out_of_capacity.add_metric([], 1.0 if exhausted else 0.0)
             yield probe_seconds
             yield probe_local
+            yield out_of_capacity
             return
         except ClusterBusy:
             # Reachable, and refusing us. Not the drill-2 case — the cluster is there — but
@@ -248,7 +285,7 @@ class LifecycleCollector:
             busy.add_metric([], 1.0)
             # Drill 11's regression run: half the queueing scrapes took this path and
             # carried no probe numbers, which is where the runbook sends you to look.
-            record_probe(prober, measured, deadline, probe_seconds, probe_local)
+            record_probe(started_prober, measured, deadline, probe_seconds, probe_local)
             yield reachable
             yield busy
             yield probe_seconds
@@ -263,7 +300,7 @@ class LifecycleCollector:
             # still true and still needed; without it OrchestratorHostOverloaded cleared in
             # the middle of both. The probe is bounded, so waiting for it cannot outlast
             # the scrape it started with.
-            record_probe(prober, measured, deadline, probe_seconds, probe_local)
+            record_probe(started_prober, measured, deadline, probe_seconds, probe_local)
             yield reachable
             yield probe_local
             return
@@ -289,10 +326,11 @@ class LifecycleCollector:
         throttled = False
         try:
             pods: dict[str, list[dict[str, Any]]] | None = release_pods()
-        except HostOverloaded:
+        except HostOverloaded as exc:
             # Drill 11: this listing was the call that ran past its bound on a starved
             # host, and it used to set nf_cluster_busy for a cluster answering in 40ms.
             pods = None
+            exhausted = exhausted or isinstance(exc, HostExhausted)
         except ClusterBusy:
             pods, throttled = None, True
         except UNAVAILABLE:
@@ -307,7 +345,9 @@ class LifecycleCollector:
                 reported.add_metric([name], 0.0)
                 continue
             current = future.result()
-            if current is HOST:
+            if current is EXHAUSTED:
+                exhausted = True
+            if current is HOST or current is EXHAUSTED:
                 ours += 1
                 reported.add_metric([name], 0.0)
                 continue
@@ -352,7 +392,9 @@ class LifecycleCollector:
         #
         # The probe started with the scrape and is bounded below the budget, so by the
         # deadline it has finished; the grace only covers a thread scheduled late.
-        probe = record_probe(prober, measured, deadline, probe_seconds, probe_local)
+        probe = record_probe(started_prober, measured, deadline, probe_seconds, probe_local)
+        exhausted = exhausted or bool(probe and probe.exhausted)
+        out_of_capacity.add_metric([], 1.0 if exhausted else 0.0)
         # No probe result at all says nothing about the cluster. Day 29 counted it as busy;
         # drill 11 showed the likeliest reason is the host being too slow to run it.
         busy.add_metric(
@@ -363,6 +405,7 @@ class LifecycleCollector:
         yield busy
         yield probe_seconds
         yield probe_local
+        yield out_of_capacity
         yield unreported
         yield reported
         yield state
@@ -372,7 +415,7 @@ class LifecycleCollector:
 
 
 def record_probe(
-    prober: threading.Thread,
+    prober: threading.Thread | None,
     measured: list[Probe],
     deadline: float,
     cluster_seconds: GaugeMetricFamily,
@@ -381,8 +424,11 @@ def record_probe(
     """Wait for the scrape's probe and record what it says about each end.
 
     The probe started with the scrape and is bounded below the budget, so by the deadline
-    it has finished; the grace only covers a thread scheduled late.
+    it has finished; the grace only covers a thread scheduled late. No thread means none
+    could be started (drill 14), and so no probe.
     """
+    if prober is None:
+        return None
     prober.join(timeout=max(0.0, deadline - time.monotonic()) + 0.25)
     probe = measured[0] if measured else None
     if probe is None:

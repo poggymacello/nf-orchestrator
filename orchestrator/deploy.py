@@ -90,6 +90,16 @@ ESCALATED_PROBE_TIMEOUT = float(os.environ.get("NF_ESCALATED_PROBE_TIMEOUT", "3"
 # looked exactly like drill 7's stalled server — while other calls were still completing.
 RECENT_SUCCESS = float(os.environ.get("NF_RECENT_SUCCESS", "30"))
 
+# helm and kubectl are Go programs. Forking them takes one pid, but the Go runtime then
+# starts several OS threads, and under a pids limit that fails *after* the process exists:
+# the binary crashes with exit 2 and these words. Copied from helm v4.2.2 in drill 14,
+# inside a container at --pids-limit 15 and 30. Without them the crash was a plain
+# DeployError: HTTP 502, "the cluster answered and refused", carrying ~19 KB of Go stack.
+EXHAUSTION_MARKERS = (
+    "failed to create new os thread",
+    "fatal error: newosproc",
+)
+
 # Server-side apply refusing to take a field from another manager. The wording comes
 # from the M4 drill-3 conflict, where `kubectl scale` owned `.spec.replicas`.
 CONFLICT_MARKERS = (
@@ -130,6 +140,22 @@ class HostOverloaded(DeployError):
     """
 
 
+class HostExhausted(HostOverloaded):
+    """This host could not create a process or thread for the call: a pids or memory limit.
+
+    Not slowness — nothing ran, or it crashed while starting. Drill 14 put the orchestrator in
+    a container at --pids-limit 15: with the cluster healthy, the scrape reported it
+    unreachable, routes answered 502 with a Go runtime stack, and concurrent requests got
+    bare 500s from the web framework's own thread pool.
+    """
+
+    @classmethod
+    def from_crash(cls, message: str) -> "HostExhausted":
+        """Keep the runtime's own first lines; drop the stack that follows them."""
+        head = message.split("runtime stack:")[0].strip().splitlines()
+        return cls("this host could not start the threads helm or kubectl need: " + " / ".join(head[:2]))
+
+
 class ClusterConflict(DeployError):
     """Another field manager owns a field this apply would change.
 
@@ -142,6 +168,8 @@ class ClusterConflict(DeployError):
 
 def classify_error(message: str) -> DeployError:
     lowered = message.lower()
+    if any(marker in lowered for marker in EXHAUSTION_MARKERS):
+        return HostExhausted.from_crash(message)
     if any(marker in lowered for marker in BUSY_MARKERS):
         return ClusterBusy(message)
     if any(marker in lowered for marker in UNREACHABLE_MARKERS):
@@ -195,6 +223,12 @@ class Probe:
         if not self.started:
             return False
         return not self.answered or self.seconds >= SLOW_PROBE
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether kubectl itself could not start its threads (drill 14)."""
+        lowered = self.error.lower()
+        return any(marker in lowered for marker in EXHAUSTION_MARKERS)
 
     @property
     def local_seconds(self) -> float | None:

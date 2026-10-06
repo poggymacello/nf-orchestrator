@@ -1,6 +1,7 @@
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel, ConfigDict
 
@@ -11,6 +12,9 @@ from orchestrator.translate import RuleTranslator, TranslationError, translate
 
 app = FastAPI(title="nf-orchestrator")
 
+# Python's wording when the operating system refuses it another thread.
+NO_THREAD = "can't start new thread"
+
 
 class TranslationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -19,6 +23,26 @@ class TranslationRequest(BaseModel):
 
 
 BUSY_RETRY_AFTER = "5"
+
+
+@app.exception_handler(RuntimeError)
+async def host_out_of_threads(request: Request, exc: RuntimeError) -> JSONResponse:
+    """The web framework runs every route on a thread pool, and this host had no thread left.
+
+    Drill 14, at --pids-limit 15: five of six concurrent status calls got a bare 500 from
+    Starlette's own pool, before any orchestrator code ran. It is the same incident as a
+    HostExhausted call, and gets the same answer. Any other RuntimeError is still a 500.
+    """
+    if NO_THREAD not in str(exc):
+        raise exc
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "this host could not start a thread to serve the request: a pids "
+            "or memory limit on the orchestrator's host"
+        },
+        headers={"Retry-After": BUSY_RETRY_AFTER},
+    )
 
 
 def http_error(exc: deploy_engine.DeployError) -> HTTPException:
