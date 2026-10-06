@@ -620,3 +620,101 @@ def test_a_frozen_cluster_on_a_starved_host_still_reports_the_host(
     body = client.get("/metrics").text
     assert "nf_cluster_reachable 0.0" in body
     assert "nf_orchestrator_probe_local_seconds 1.04" in body
+
+
+# --- drill 14: this host cannot start the processes and threads the scrape needs ---
+
+
+def exhausted_error() -> deploy_engine.HostExhausted:
+    return deploy_engine.HostExhausted("this host could not start the threads helm needs")
+
+
+def sample(body: str, name: str) -> str | None:
+    for line in body.splitlines():
+        if line.startswith(name + " "):
+            return line.split(" ", 1)[1]
+    return None
+
+
+def test_a_listing_this_host_cannot_start_does_not_page_the_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 14 at --pids-limit 15: nf_cluster_reachable 0 for a healthy cluster."""
+
+    def crashed() -> list[str]:
+        raise exhausted_error()
+
+    monkeypatch.setattr(metrics, "release_names", crashed)
+    body = client.get("/metrics").text
+    assert sample(body, "nf_cluster_reachable") is None
+    assert sample(body, "nf_orchestrator_exhausted") == "1.0"
+
+
+def test_releases_this_host_cannot_read_count_as_the_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At --pids-limit 30, 8 of 10 releases were reason="error" with no cause anywhere."""
+
+    def crashed(name: str, pods: object = None) -> dict[str, object]:
+        raise exhausted_error()
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(metrics, "reconcile_release", crashed)
+    body = client.get("/metrics").text
+    assert 'nf_releases_unreported{reason="host"} 1.0' in body
+    assert 'nf_releases_unreported{reason="error"} 0.0' in body
+    assert sample(body, "nf_cluster_busy") == "0.0"
+    assert sample(body, "nf_orchestrator_exhausted") == "1.0"
+
+
+def test_a_pod_listing_this_host_cannot_start_is_not_throttling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def crashed() -> dict[str, object]:
+        raise exhausted_error()
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(metrics, "release_pods", crashed)
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    body = client.get("/metrics").text
+    assert sample(body, "nf_cluster_busy") == "0.0"
+    assert sample(body, "nf_orchestrator_exhausted") == "1.0"
+
+
+def test_a_worker_thread_that_cannot_start_is_recorded_not_raised() -> None:
+    class NoThreads:
+        def submit(self, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("can't start new thread")
+
+    future = metrics.submit(NoThreads(), "sample-nf", None)  # type: ignore[arg-type]
+    assert future.result() is metrics.EXHAUSTED
+
+
+def test_a_scrape_with_no_thread_for_its_probe_still_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import types
+
+    class Unstartable(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    # Only the scrape module's view of threading: the test client needs real threads.
+    monkeypatch.setattr(metrics, "threading", types.SimpleNamespace(Thread=Unstartable))
+    monkeypatch.setattr(metrics, "release_names", list)
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert sample(response.text, "nf_orchestrator_exhausted") == "1.0"
+    assert sample(response.text, "nf_cluster_probe_seconds") is None
+
+
+def test_an_ordinary_scrape_is_not_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    body = client.get("/metrics").text
+    assert sample(body, "nf_orchestrator_exhausted") == "0.0"

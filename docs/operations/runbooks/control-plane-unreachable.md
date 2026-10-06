@@ -83,6 +83,13 @@ It stays green with the entire cluster down, deliberately.
 `/readyz` is the one that answers this question. `503` there confirms the orchestrator cannot reach
 the cluster; `200` means the problem is elsewhere and this is not your runbook.
 
+**A `502` or `503` mentioning `failed to create new OS thread` or `newosproc` is not the cluster
+either.** That is the orchestrator's host out of threads; see
+[when the host cannot start threads](scrape-over-budget.md#when-the-host-cannot-start-threads-at-all).
+Before 2026-10-06 it was a `502`, "the cluster refused", with the whole Go stack attached, and the
+scrape paged `ClusterUnreachable` for a healthy cluster
+([drill 14](../postmortems/2026-10-06-drill-14-a-host-that-cannot-start-threads.md)).
+
 **Unless the detail names the host.** A `503` with `Retry-After` that says *kubectl get did not start
 within 3s: this host is too overloaded to tell whether the cluster is answering* means the
 orchestrator's own machine couldn't run the check. That says nothing either way about the cluster —

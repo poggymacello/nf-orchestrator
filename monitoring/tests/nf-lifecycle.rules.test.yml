@@ -65,3 +65,50 @@ tests:
         exp_samples:
           - labels: '{instance="orchestrator:8000",job="nf-orchestrator"}'
             value: 0.6666666666666666
+
+  # Drill 14 at --pids-limit 30: releases crash for threads every scrape, while the probe itself
+  # starts and finishes quickly, so the host's share stays near zero. Fires on the second half.
+  - interval: 5s
+    input_series:
+      - series: 'nf_orchestrator_probe_local_seconds{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '0.04x40'
+      - series: 'nf_orchestrator_exhausted{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+      - series: 'up{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+    promql_expr_test:
+      - expr: 'avg_over_time(nf_orchestrator_probe_local_seconds[2m]) >= 0.5 or (sum_over_time(nf_orchestrator_exhausted[2m]) / count_over_time(up{job="nf-orchestrator"}[2m])) >= 0.25'
+        eval_time: 3m
+        exp_samples:
+          - labels: '{instance="orchestrator:8000",job="nf-orchestrator"}'
+            value: 1
+
+  # Drill 11: CPU starved, nothing crashes. Fires on the first half, as before.
+  - interval: 5s
+    input_series:
+      - series: 'nf_orchestrator_probe_local_seconds{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1.2x40'
+      - series: 'nf_orchestrator_exhausted{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '0x40'
+      - series: 'up{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+    promql_expr_test:
+      - expr: 'avg_over_time(nf_orchestrator_probe_local_seconds[2m]) >= 0.5 or (sum_over_time(nf_orchestrator_exhausted[2m]) / count_over_time(up{job="nf-orchestrator"}[2m])) >= 0.25'
+        eval_time: 3m
+        exp_samples:
+          - labels: '{instance="orchestrator:8000",job="nf-orchestrator"}'
+            value: 1.2
+
+  # A healthy host: neither half.
+  - interval: 5s
+    input_series:
+      - series: 'nf_orchestrator_probe_local_seconds{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '0.05x40'
+      - series: 'nf_orchestrator_exhausted{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '0x40'
+      - series: 'up{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+    promql_expr_test:
+      - expr: 'avg_over_time(nf_orchestrator_probe_local_seconds[2m]) >= 0.5 or (sum_over_time(nf_orchestrator_exhausted[2m]) / count_over_time(up{job="nf-orchestrator"}[2m])) >= 0.25'
+        eval_time: 3m
+        exp_samples: []

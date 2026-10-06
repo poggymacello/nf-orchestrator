@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-10-06 | 33 | Run the orchestrator under a pids limit, and find a host out of threads paging as a cluster outage | [2026-10-06](2026-10-06.md) |
 | 2026-09-27 | 32 | Repeat drill 12's outage with nothing scraping, and find two routes each wrong where the other was right | [2026-09-27](2026-09-27.md) |
 | 2026-09-26 | 31 | Drill a starved host and a frozen cluster together, and find an alert that nearly paged throttling during an outage | [2026-09-26](2026-09-26.md) |
 | 2026-09-24 | 30 | Starve the orchestrator's own host with the cluster healthy, and stop a busy laptop paging as a throttling cluster | [2026-09-24](2026-09-24.md) |
