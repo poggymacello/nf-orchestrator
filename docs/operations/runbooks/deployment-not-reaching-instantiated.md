@@ -1,7 +1,9 @@
 # Runbook — deployment not reaching INSTANTIATED
 
 **Use when:** a deployment sits in `INSTANTIATING`, flaps between states, or reports `INSTANTIATED`
-you do not believe.
+you do not believe. Linked from the `NFNotInstantiated`, `NFFailed` and `NFReplicaShortfall` alerts,
+and from `NFLastOperationFailed`: a failed upgrade is usually a field-ownership conflict, and the
+recovery for that is in [step 6](#6-recovery).
 
 **Severity:** Sev-2 if the workload is genuinely still coming up. Sev-1 if the reported state and
 the cluster disagree.
