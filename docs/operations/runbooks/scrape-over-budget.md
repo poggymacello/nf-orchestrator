@@ -1,7 +1,13 @@
 # Runbook — scrape over budget
 
 **Use when:** `NFReleaseUnreported` is firing, `nf_releases_unreported` is above zero, or the
-orchestrator's Prometheus target shows a `lastScrapeDuration` close to 4 seconds.
+orchestrator's Prometheus target shows a `lastScrapeDuration` close to 4 seconds. Also linked from
+`OrchestratorHostOverloaded` (see [the orchestrator's host is
+overloaded](#the-orchestrators-host-is-overloaded)) and from `OrchestratorScrapeFailing`. For that one,
+first check whether the process is alive at all: `curl -s localhost:8000/healthz` answers
+`{"status":"ok"}` from any running orchestrator, whatever state the cluster is in. If it answers, the
+scrape is outrunning Prometheus's 5s timeout, which is drill 7's incident and the rest of this
+runbook. If it doesn't, the orchestrator process is down: restart it. **(restart not drilled)**
 
 **Severity:** Sev-1 for the releases named, Sev-2 overall. The orchestrator and the cluster may both
 be healthy — but a release with no lifecycle series has **no alerting at all**: if it fails,
