@@ -718,3 +718,41 @@ def test_an_ordinary_scrape_is_not_exhausted(monkeypatch: pytest.MonkeyPatch) ->
     )
     body = client.get("/metrics").text
     assert sample(body, "nf_orchestrator_exhausted") == "0.0"
+
+
+# --- drill 15: this host cannot spawn its tools at all ---
+
+
+def test_helm_missing_does_not_page_the_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drill 15, before: nf_cluster_reachable 0 for a healthy cluster."""
+
+    def missing() -> list[str]:
+        raise deploy_engine.HostMisconfigured("helm is not installed")
+
+    monkeypatch.setattr(metrics, "release_names", missing)
+    body = client.get("/metrics").text
+    assert sample(body, "nf_cluster_reachable") is None
+    assert sample(body, "nf_orchestrator_misconfigured") == "1.0"
+
+
+def test_releases_unreadable_for_a_missing_tool_count_as_the_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(name: str, pods: object = None) -> dict[str, object]:
+        raise deploy_engine.HostMisconfigured("kubectl is not installed")
+
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(metrics, "reconcile_release", missing)
+    body = client.get("/metrics").text
+    assert 'nf_releases_unreported{reason="host"} 1.0' in body
+    assert sample(body, "nf_orchestrator_misconfigured") == "1.0"
+    assert sample(body, "nf_cluster_busy") == "0.0"
+
+
+def test_an_ordinary_scrape_is_not_misconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    body = client.get("/metrics").text
+    assert sample(body, "nf_orchestrator_misconfigured") == "0.0"

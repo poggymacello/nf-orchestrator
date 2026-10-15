@@ -13,6 +13,7 @@ from orchestrator.deploy import (
     ClusterBusy,
     DeployError,
     HostExhausted,
+    HostMisconfigured,
     HostOverloaded,
     Probe,
     api_server_probe,
@@ -46,8 +47,9 @@ deployments_total = Counter(
     registry=REGISTRY,
 )
 
-# helm and kubectl are subprocesses: a missing binary raises OSError rather than
-# DeployError, and a scrape must survive that the same way it survives an outage.
+# helm and kubectl are subprocesses. A missing binary or a failed fork is classified at the
+# spawn since drill 15 (HostMisconfigured, HostExhausted); any other OSError still has to be
+# survived rather than allowed to end the scrape.
 UNAVAILABLE = (DeployError, OSError)
 
 
@@ -88,6 +90,7 @@ def reconcile_release(
 BUSY = "busy"
 HOST = "host"
 EXHAUSTED = "exhausted"
+MISCONFIGURED = "misconfigured"
 Snapshot = dict[str, Any] | str | None
 
 
@@ -97,6 +100,8 @@ def snapshot(name: str, pods: list[dict[str, Any]] | None = None) -> Snapshot:
         return reconcile_release(name, pods)
     except HostExhausted:
         return EXHAUSTED
+    except HostMisconfigured:
+        return MISCONFIGURED
     except HostOverloaded:
         return HOST
     except ClusterBusy:
@@ -207,7 +212,7 @@ class LifecycleCollector:
             ),
             daemon=True,
         )
-        exhausted = False
+        exhausted = misconfigured = False
         started_prober: threading.Thread | None = prober
         try:
             prober.start()
@@ -259,9 +264,23 @@ class LifecycleCollector:
             "1 when this scrape could not start a process or thread it needed: a pids or "
             "memory limit on the orchestrator's own host",
         )
+        tools_missing = GaugeMetricFamily(
+            "nf_orchestrator_misconfigured",
+            "1 when this scrape found helm or kubectl missing or not executable on the "
+            "orchestrator's own host",
+        )
 
         try:
             names = release_names()
+        except HostMisconfigured:
+            # Drill 15: helm missing. Nothing can be said about the cluster, and the host
+            # will not recover on its own, which is why this has its own series and page.
+            record_probe(started_prober, measured, deadline, probe_seconds, probe_local)
+            tools_missing.add_metric([], 1.0)
+            yield probe_seconds
+            yield probe_local
+            yield tools_missing
+            return
         except HostOverloaded as exc:
             # Nothing is known about the cluster, so no claim about it either way: no
             # reachable, no busy. What is known is how slow this host is, and that is the
@@ -326,6 +345,8 @@ class LifecycleCollector:
         throttled = False
         try:
             pods: dict[str, list[dict[str, Any]]] | None = release_pods()
+        except HostMisconfigured:
+            pods, misconfigured = None, True
         except HostOverloaded as exc:
             # Drill 11: this listing was the call that ran past its bound on a starved
             # host, and it used to set nf_cluster_busy for a cluster answering in 40ms.
@@ -347,7 +368,9 @@ class LifecycleCollector:
             current = future.result()
             if current is EXHAUSTED:
                 exhausted = True
-            if current is HOST or current is EXHAUSTED:
+            if current is MISCONFIGURED:
+                misconfigured = True
+            if current in (HOST, EXHAUSTED, MISCONFIGURED):
                 ours += 1
                 reported.add_metric([name], 0.0)
                 continue
@@ -395,6 +418,10 @@ class LifecycleCollector:
         probe = record_probe(started_prober, measured, deadline, probe_seconds, probe_local)
         exhausted = exhausted or bool(probe and probe.exhausted)
         out_of_capacity.add_metric([], 1.0 if exhausted else 0.0)
+        misconfigured = misconfigured or bool(
+            probe and isinstance(probe.spawn_failure, HostMisconfigured)
+        )
+        tools_missing.add_metric([], 1.0 if misconfigured else 0.0)
         # No probe result at all says nothing about the cluster. Day 29 counted it as busy;
         # drill 11 showed the likeliest reason is the host being too slow to run it.
         busy.add_metric(
@@ -406,6 +433,7 @@ class LifecycleCollector:
         yield probe_seconds
         yield probe_local
         yield out_of_capacity
+        yield tools_missing
         yield unreported
         yield reported
         yield state
