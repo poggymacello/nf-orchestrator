@@ -1,10 +1,12 @@
+import errno
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +158,49 @@ class HostExhausted(HostOverloaded):
         return cls("this host could not start the threads helm or kubectl need: " + " / ".join(head[:2]))
 
 
+class HostMisconfigured(DeployError):
+    """A tool the orchestrator runs is missing or cannot be executed on this host.
+
+    Not transient, so not a 503: nothing gets better by waiting, and someone has to install
+    the tool or fix PATH. Drill 15 removed helm from the orchestrator's container with the
+    cluster healthy: the scrape reported the cluster unreachable, the routes answered bare
+    500s, and /readyz answered 200 because kubectl was still there.
+    """
+
+
+# The two programs every cluster call goes through. /readyz checks both are installed.
+TOOLS = ("helm", "kubectl")
+
+# errno values that mean "no room to start a process right now", as opposed to "no such
+# program". Drill 15 saw EAGAIN as BlockingIOError from fork, at a pids limit with no spare.
+SPAWN_EXHAUSTION = frozenset({errno.EAGAIN, errno.ENOMEM})
+
+
+def spawn_failure(tool: str, exc: OSError) -> DeployError | None:
+    """What a failure to start `tool` says about this host, or None if it says nothing known.
+
+    Since day 12 every OSError at spawn had been grouped with an unreachable cluster. Drill
+    15 found both of the causes it covers were the host's, and that they need different
+    answers: a missing tool stays missing, and a full process table empties again.
+    """
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return HostMisconfigured(
+            f"{tool} is not installed or not executable on this host ({exc.strerror}): "
+            "install it or fix PATH; retrying will not help"
+        )
+    if exc.errno in SPAWN_EXHAUSTION:
+        return HostExhausted(
+            f"this host could not start {tool}: {exc.strerror} (errno {exc.errno}), a pids "
+            "or memory limit on the orchestrator's host"
+        )
+    return None
+
+
+def missing_tools() -> list[str]:
+    """The tools in TOOLS that are not on PATH. Looked up, not run."""
+    return [tool for tool in TOOLS if shutil.which(tool) is None]
+
+
 class ClusterConflict(DeployError):
     """Another field manager owns a field this apply would change.
 
@@ -206,6 +251,7 @@ class Probe:
     started: bool = True
     startup: float | None = None
     error: str = ""
+    spawn_failure: DeployError | None = field(default=None, compare=False)
 
     @property
     def slow(self) -> bool:
@@ -226,7 +272,9 @@ class Probe:
 
     @property
     def exhausted(self) -> bool:
-        """Whether kubectl itself could not start its threads (drill 14)."""
+        """Whether kubectl could not be started, or could not start its threads (drills 14, 15)."""
+        if isinstance(self.spawn_failure, HostExhausted):
+            return True
         lowered = self.error.lower()
         return any(marker in lowered for marker in EXHAUSTION_MARKERS)
 
@@ -311,8 +359,13 @@ def _measure_probe(timeout: float) -> Probe:
             started=bool(partial.strip()),
             startup=startup_delay(partial, spawned),
         )
-    except OSError:
-        return Probe(answered=False, seconds=time.monotonic() - started, started=False)
+    except OSError as exc:
+        return Probe(
+            answered=False,
+            seconds=time.monotonic() - started,
+            started=False,
+            spawn_failure=spawn_failure("kubectl", exc),
+        )
     answered = result.returncode == 0
     if answered:
         note_success()
@@ -378,6 +431,9 @@ def run_bounded(command: list[str], args: list[str], timeout: float) -> str:
     except subprocess.TimeoutExpired as exc:
         verb = " ".join([command[0], *args[:1]])
         if args != READYZ:
+            failure = settled_probe().spawn_failure
+            if failure is not None:
+                raise failure from exc
             local = local_delay()
             if local:
                 raise HostOverloaded(
@@ -390,6 +446,11 @@ def run_bounded(command: list[str], args: list[str], timeout: float) -> str:
                     "reachable and not serving this client (throttled or overloaded)"
                 ) from exc
         raise ClusterUnreachable(f"{verb} did not answer within {timeout:g}s") from exc
+    except OSError as exc:
+        failure = spawn_failure(command[0], exc)
+        if failure is None:
+            raise
+        raise failure from exc
     if result.returncode != 0:
         error = classify_error(result.stderr.strip() or result.stdout.strip())
         if not isinstance(error, ClusterUnreachable):
@@ -495,9 +556,19 @@ def check_cluster() -> str:
     call, a starved host with a healthy cluster made this route say the cluster was
     unreachable.
     """
+    # Ready means able to do the job, and the job needs both tools. Drill 15: with helm gone,
+    # this answered 200 while every deploy and status call failed.
+    missing = missing_tools()
+    if missing:
+        raise HostMisconfigured(
+            f"{' and '.join(missing)} not found on PATH on this host: install or fix PATH; "
+            "retrying will not help"
+        )
     probe = api_server_probe(max_age=0.0, timeout=READ_TIMEOUT)
     if probe.answered:
         return "ok"
+    if probe.spawn_failure is not None:
+        raise probe.spawn_failure
     if probe.error:
         raise classify_error(probe.error)
     if not probe.started:
