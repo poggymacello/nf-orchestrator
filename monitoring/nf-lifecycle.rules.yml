@@ -164,3 +164,19 @@ groups:
             need at all (nf_orchestrator_exhausted): a pids or memory limit. Do not change
             anything on the cluster — follow runbooks/scrape-over-budget.md, "The
             orchestrator's host is overloaded".
+
+      # Drill 15: helm missing from the orchestrator's container, cluster healthy. Before,
+      # this paged ClusterUnreachable, and /readyz still answered 200. It does not clear by
+      # itself and nothing on the cluster helps, so it pages on its own series after a minute.
+      - alert: OrchestratorMisconfigured
+        expr: nf_orchestrator_misconfigured == 1
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "The orchestrator cannot run helm or kubectl on its own host"
+          description: >-
+            A tool every cluster call goes through is missing from the orchestrator's PATH or
+            cannot be executed. Every deploy and status call fails with HTTP 500 until it is
+            installed; waiting will not fix it, and nothing on the cluster is wrong. Follow
+            runbooks/orchestrator-misconfigured.md.
