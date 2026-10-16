@@ -18,6 +18,7 @@ from orchestrator.deploy import (
     Probe,
     api_server_probe,
     list_releases,
+    tool_problems,
 )
 from orchestrator.reconciler import OperationState, State
 
@@ -212,7 +213,11 @@ class LifecycleCollector:
             ),
             daemon=True,
         )
-        exhausted = misconfigured = False
+        exhausted = False
+        # Drill 16: a wrong helm version lists releases fine and fails every deploy, so the
+        # scrape has to ask about the tools as well as notice when one cannot be run. Cached for
+        # a minute, and it handles a helm that cannot be started itself.
+        misconfigured = bool(tool_problems())
         started_prober: threading.Thread | None = prober
         try:
             prober.start()
