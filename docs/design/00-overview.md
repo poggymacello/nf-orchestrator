@@ -36,11 +36,11 @@ The intent → deploy → lifecycle → metrics path is complete and running. An
 deployed with Helm, and its lifecycle state derived from live cluster signals on every read. Ten
 alert rules, each with a runbook, sit on top of the metrics.
 
-Fifteen deliberate failure drills have been run, each with a postmortem, fixes verified by re-running
+Sixteen deliberate failure drills have been run, each with a postmortem, fixes verified by re-running
 it, and runbooks corrected by what it showed ([operations](../operations/README.md)). The later drills
 turned the orchestrator's main question from *what state is the network function in?* to *whose
 failure is this?*: the cluster refusing, throttling or gone, or the orchestrator's own host slow,
-out of processes, or missing a tool. Each answer has its own HTTP status, metric and alert
+out of processes, or missing a tool or running the wrong version of one. Each answer has its own HTTP status, metric and alert
 ([architecture](architecture.md#failure-classification)).
 
 Five CI jobs run on every branch push: lint, unit tests and promtool tests of the alert rules;

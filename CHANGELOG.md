@@ -7,6 +7,19 @@ pull request that merged them, and the full reasoning for each is in the linked 
 ## Unreleased
 
 ### Added
+- A runtime check of helm's major version, before every write, in `/readyz` and in every scrape. A
+  helm other than 4 is `HostMisconfigured`, HTTP `500` naming the version found
+  ([drill 16](docs/operations/postmortems/2026-10-16-drill-16-the-wrong-helm.md),
+  [ADR-0023](docs/design/adr/0023-the-tools-are-checked-not-assumed.md)).
+
+### Fixed
+- With Helm 3 installed, every deploy was answered `502` ("the cluster refused") while `/readyz`
+  reported ready. Helm rejecting the orchestrator's own arguments is now classified as this host's
+  problem.
+
+## 2026-10-16 — [#31](https://github.com/poggymacello/nf-orchestrator/pull/31)
+
+### Added
 - Reference documentation, checked against the code by `tests/test_reference_docs.py`:
   [configuration](docs/reference/configuration.md), [API and error model](docs/reference/api.md),
   [metrics](docs/reference/metrics.md), [alerts](docs/reference/alerts.md).
