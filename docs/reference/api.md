@@ -105,8 +105,8 @@ Always `200` `{"status": "ok"}` while the process runs. Says nothing about the c
 
 ### `GET /readyz` — readiness
 
-`200` `{"status": "ready", "cluster": "reachable"}` when helm and kubectl are installed and the API
-server answers its own `/readyz`. Otherwise the [error model](#error-model) says which end failed:
+`200` `{"status": "ready", "cluster": "reachable"}` when helm and kubectl are installed, helm is
+version 4, and the API server answers its own `/readyz`. Otherwise the [error model](#error-model) says which end failed:
 a missing tool is `500`, an overloaded host or a throttled cluster is `503` with `Retry-After`, and
 an unreachable cluster is `503` without it.
 
@@ -125,7 +125,7 @@ detail says what was observed, with the numbers.
 | `400` | — | The request contradicts itself (repair name differs from the path) | Fix the request |
 | `409` | — | Another field manager owns a field this intent would change | No. Use `/repair` if the orchestrator should own it |
 | `422` | — | The intent or the text failed validation | Fix the request |
-| `500` | — | **This host cannot run helm or kubectl**: missing or not executable. Nothing changes until someone installs it ([runbook](../operations/runbooks/orchestrator-misconfigured.md)) | No |
+| `500` | — | **This host cannot run helm or kubectl**: missing, not executable, or the wrong major version of helm. Nothing changes until someone installs the right one ([runbook](../operations/runbooks/orchestrator-misconfigured.md)) | No |
 | `502` | — | The cluster answered and refused the operation | Not as-is |
 | `503` | `5` | **The cluster is reachable and not serving this client**: throttled or overloaded ([runbook](../operations/runbooks/cluster-throttling.md)) | Yes, after `Retry-After` |
 | `503` | `5` | **This host is overloaded or out of processes or threads**: the detail names the host and, where measured, the cluster's own round trip ([runbook](../operations/runbooks/scrape-over-budget.md#the-orchestrators-host-is-overloaded)) | Yes, after `Retry-After` |
