@@ -88,3 +88,5 @@ def tools_are_installed(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     if request.node.get_closest_marker("real_tool_lookup"):
         return
     monkeypatch.setattr(deploy_engine, "missing_tools", list)
+    # Day 35: and helm's version, which costs a process to ask.
+    monkeypatch.setattr(deploy_engine, "version_problems", list)
