@@ -756,3 +756,21 @@ def test_an_ordinary_scrape_is_not_misconfigured(monkeypatch: pytest.MonkeyPatch
     )
     body = client.get("/metrics").text
     assert sample(body, "nf_orchestrator_misconfigured") == "0.0"
+
+
+# --- drill 16: the wrong major version of helm ---
+
+
+def test_the_wrong_helm_shows_as_misconfigured_while_reads_still_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Helm 3 lists and reads releases fine; only writes fail. Before: nothing said so."""
+    monkeypatch.setattr(metrics, "tool_problems", lambda: ["helm v3.19.0 is installed"])
+    monkeypatch.setattr(metrics, "release_names", lambda: ["sample-nf"])
+    monkeypatch.setattr(
+        metrics, "reconcile_release", lambda name, pods=None: {"state": "INSTANTIATED"}
+    )
+    body = client.get("/metrics").text
+    assert sample(body, "nf_orchestrator_misconfigured") == "1.0"
+    assert sample(body, "nf_cluster_reachable") == "1.0"
+    assert 'nf_release_reported{release="sample-nf"} 1.0' in body

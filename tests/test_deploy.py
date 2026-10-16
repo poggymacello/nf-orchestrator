@@ -1079,3 +1079,95 @@ def test_a_probe_with_no_spare_pid_is_exhausted_not_too_slow(
     assert probe.exhausted
     with pytest.raises(deploy_engine.HostExhausted):
         deploy_engine.check_cluster()
+
+
+# --- drill 16: the wrong major version of helm ---
+
+HELM3 = "v3.19.0+g3d8990f"  # `helm version --short` in drill 16's Helm 3 image
+HELM4 = "v4.2.2+gb05881c"
+SET_JSON_REJECTED = 'Error: failed parsing --set-json data {"replicaCount": 2, "environment": "dev"}'
+
+
+def helm_reports(monkeypatch: pytest.MonkeyPatch, version: str) -> list[list[str]]:
+    import subprocess
+
+    calls: list[list[str]] = []
+
+    class Reported:
+        returncode = 0
+        stdout = version + "\n"
+        stderr = ""
+
+    def fake(command: list[str], *args: object, **kwargs: object) -> object:
+        calls.append(command)
+        return Reported()
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    return calls
+
+
+@pytest.mark.real_tool_lookup
+def test_helm_3_is_a_version_problem(monkeypatch: pytest.MonkeyPatch) -> None:
+    helm_reports(monkeypatch, HELM3)
+    problems = deploy_engine.version_problems()
+    assert len(problems) == 1
+    assert "v3.19.0" in problems[0] and "Helm 4 is required" in problems[0]
+
+
+@pytest.mark.real_tool_lookup
+def test_helm_4_is_fine(monkeypatch: pytest.MonkeyPatch) -> None:
+    helm_reports(monkeypatch, HELM4)
+    assert deploy_engine.version_problems() == []
+
+
+@pytest.mark.real_tool_lookup
+def test_an_unreadable_version_is_not_called_wrong(monkeypatch: pytest.MonkeyPatch) -> None:
+    helm_reports(monkeypatch, "something unexpected")
+    assert deploy_engine.version_problems() == []
+
+
+@pytest.mark.real_tool_lookup
+def test_a_helm_that_cannot_run_is_not_a_version_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing is missing_tools()'s finding, not this one's."""
+    import subprocess
+
+    def missing(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError(2, "No such file or directory", "helm")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert deploy_engine.version_problems() == []
+
+
+@pytest.mark.real_tool_lookup
+def test_the_version_is_asked_once_a_minute(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = helm_reports(monkeypatch, HELM4)
+    deploy_engine.version_problems()
+    deploy_engine.version_problems()
+    assert len(calls) == 1
+
+
+def test_helm_rejecting_its_arguments_is_this_hosts_problem() -> None:
+    """Drill 16, before: 502, which this API documents as the cluster refusing."""
+    error = deploy_engine.classify_error(SET_JSON_REJECTED)
+    assert isinstance(error, deploy_engine.HostMisconfigured)
+    assert "failed parsing --set-json" in str(error)
+
+
+def test_deploy_refuses_to_run_with_the_wrong_helm(monkeypatch: pytest.MonkeyPatch) -> None:
+    ran: list[list[str]] = []
+    monkeypatch.setattr(deploy_engine, "version_problems", lambda: ["helm v3.19.0 is installed"])
+    monkeypatch.setattr(deploy_engine, "run_helm", lambda args: ran.append(args) or HELM_OUTPUT)
+    response = client.post("/deployments", json=VALID)
+    assert response.status_code == 500
+    assert "v3.19.0" in response.json()["detail"]
+    assert ran == []
+
+
+def test_readiness_refuses_the_wrong_helm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drill 16, before: 200 ready, with every deploy failing."""
+    monkeypatch.setattr(deploy_engine, "version_problems", lambda: ["helm v3.19.0 is installed"])
+    response = client.get("/readyz")
+    assert response.status_code == 500
+    assert "v3.19.0" in response.json()["detail"]

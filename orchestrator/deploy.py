@@ -102,6 +102,11 @@ EXHAUSTION_MARKERS = (
     "fatal error: newosproc",
 )
 
+# helm refusing the arguments the orchestrator passed, before it contacted anything. Copied from
+# Helm 3.19.0 in drill 16. The version gate stops this being reached; this is for the helm
+# swapped underneath a running orchestrator inside the gate's cache window.
+REJECTED_ARGUMENT_MARKERS = ("failed parsing --set-json data",)
+
 # Server-side apply refusing to take a field from another manager. The wording comes
 # from the M4 drill-3 conflict, where `kubectl scale` owned `.spec.replicas`.
 CONFLICT_MARKERS = (
@@ -201,6 +206,71 @@ def missing_tools() -> list[str]:
     return [tool for tool in TOOLS if shutil.which(tool) is None]
 
 
+# The deploy path depends on Helm 4 twice over: on server-side apply refusing a field another
+# manager owns (ADR-0008's 409), and on `--set-json` taking a whole JSON object. Drill 16 ran
+# Helm 3.19.0: every deploy failed with "failed parsing --set-json data", answered as 502 —
+# "the cluster refused" — while /readyz said ready and nothing in /metrics changed.
+REQUIRED_HELM_MAJOR = 4
+HELM_VERSION = re.compile(r"v(\d+)\.\d+\.\d+\S*")
+# Asking costs a process, so an answer is reused for a minute. A tool swapped underneath a
+# running orchestrator is seen within that, and by the error classifier at once.
+VERSION_TTL = 60.0
+_versions: tuple[float, list[str]] | None = None
+
+
+def version_problems() -> list[str]:
+    """Why the installed helm cannot do this orchestrator's job, or nothing.
+
+    A helm that cannot be run, or whose version cannot be read, is not reported here: a
+    missing tool is missing_tools()'s finding, and a version this cannot parse is not
+    evidence of a wrong one.
+    """
+    global _versions
+    now = time.monotonic()
+    if _versions is not None and now - _versions[0] < VERSION_TTL:
+        return _versions[1]
+    try:
+        reported = subprocess.run(
+            ["helm", "version", "--short"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=READ_TIMEOUT,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        reported = ""
+    problems = []
+    found = HELM_VERSION.match(reported)
+    if found and int(found.group(1)) != REQUIRED_HELM_MAJOR:
+        problems.append(
+            f"helm {found.group(0)} is installed but Helm {REQUIRED_HELM_MAJOR} is required "
+            "(server-side apply that refuses conflicting field owners, and --set-json taking a "
+            "whole object): install Helm 4; retrying will not help"
+        )
+    _versions = (now, problems)
+    return problems
+
+
+def tool_problems() -> list[str]:
+    """Everything about this host's helm and kubectl that stops the orchestrator working."""
+    missing = missing_tools()
+    problems = []
+    if missing:
+        problems.append(
+            f"{' and '.join(missing)} not found on PATH on this host: install or fix PATH; "
+            "retrying will not help"
+        )
+    if "helm" not in missing:
+        problems.extend(version_problems())
+    return problems
+
+
+def require_tools() -> None:
+    problems = tool_problems()
+    if problems:
+        raise HostMisconfigured("; ".join(problems))
+
+
 class ClusterConflict(DeployError):
     """Another field manager owns a field this apply would change.
 
@@ -215,6 +285,12 @@ def classify_error(message: str) -> DeployError:
     lowered = message.lower()
     if any(marker in lowered for marker in EXHAUSTION_MARKERS):
         return HostExhausted.from_crash(message)
+    if any(marker in lowered for marker in REJECTED_ARGUMENT_MARKERS):
+        # helm refused the orchestrator's own arguments before contacting anything (drill 16).
+        return HostMisconfigured(
+            f"helm rejected the orchestrator's arguments, so its version or install does not "
+            f"match what this orchestrator needs: {message.strip().splitlines()[0][:200]}"
+        )
     if any(marker in lowered for marker in BUSY_MARKERS):
         return ClusterBusy(message)
     if any(marker in lowered for marker in UNREACHABLE_MARKERS):
@@ -303,9 +379,11 @@ _last_success: float | None = None
 def reset_probe_state() -> None:
     """Forget the cached probe and the last successful call. For tests."""
     global _probe, _last_success
+    global _versions
     with _probe_lock:
         _probe = None
         _last_success = None
+        _versions = None
 
 
 def note_success() -> None:
@@ -558,12 +636,8 @@ def check_cluster() -> str:
     """
     # Ready means able to do the job, and the job needs both tools. Drill 15: with helm gone,
     # this answered 200 while every deploy and status call failed.
-    missing = missing_tools()
-    if missing:
-        raise HostMisconfigured(
-            f"{' and '.join(missing)} not found on PATH on this host: install or fix PATH; "
-            "retrying will not help"
-        )
+    # Drill 16: and the right major version of helm.
+    require_tools()
     probe = api_server_probe(max_age=0.0, timeout=READ_TIMEOUT)
     if probe.answered:
         return "ok"
@@ -626,6 +700,8 @@ def deploy(intent: Intent, force_conflicts: bool = False) -> dict[str, Any]:
     separately named operation, because it overrides whatever else was writing to
     those fields — see ADR-0008.
     """
+    # Refuse before writing anything with a helm that would fail or, worse, behave differently.
+    require_tools()
     values = render_values(intent)
     name = release_name(intent)
     args = [
