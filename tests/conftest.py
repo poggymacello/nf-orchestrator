@@ -69,3 +69,22 @@ def probe_state_starts_empty() -> Iterator[None]:
     deploy_engine.reset_probe_state()
     yield
     deploy_engine.reset_probe_state()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "real_tool_lookup: let this test see the real PATH lookup for helm and kubectl"
+    )
+
+
+@pytest.fixture(autouse=True)
+def tools_are_installed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests do not depend on helm or kubectl being on the test machine's PATH.
+
+    Day 34: /readyz started checking both tools exist. CI's lint-test runner and a
+    contributor's laptop differ on that, and a unit test must not. Tests about a missing
+    tool override this; the one about the lookup itself is marked real_tool_lookup.
+    """
+    if request.node.get_closest_marker("real_tool_lookup"):
+        return
+    monkeypatch.setattr(deploy_engine, "missing_tools", list)
