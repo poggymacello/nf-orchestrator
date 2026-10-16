@@ -5,6 +5,7 @@ what I learned. Newest entries first.
 
 | Date | Day | Focus | Log |
 |---|---|---|---|
+| 2026-10-16 | 35 | Run the orchestrator with Helm 3, and stop the wrong tool from being blamed on the cluster | [2026-10-16 (day 35)](2026-10-16-day-35.md) |
 | 2026-10-16 | 34 | Drill a host that cannot spawn its tools, and bring the documentation to a tested, reference-grade standard | [2026-10-16](2026-10-16.md) |
 | 2026-10-06 | 33 | Run the orchestrator under a pids limit, and find a host out of threads paging as a cluster outage | [2026-10-06](2026-10-06.md) |
 | 2026-09-27 | 32 | Repeat drill 12's outage with nothing scraping, and find two routes each wrong where the other was right | [2026-09-27](2026-09-27.md) |

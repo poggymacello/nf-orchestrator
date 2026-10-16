@@ -6,6 +6,8 @@
   [drill 15](../../operations/postmortems/2026-10-16-drill-15-the-orchestrator-cannot-spawn-its-tools.md)
 - **Refines:** [ADR-0021](0021-a-host-out-of-capacity-is-not-a-slow-host.md), which classified a
   tool that started and then crashed for want of threads
+- **Refined by:** [ADR-0023](0023-the-tools-are-checked-not-assumed.md), which also checks helm's
+  major version, closing the "wrong version is still invisible" consequence below
 
 ## Context
 

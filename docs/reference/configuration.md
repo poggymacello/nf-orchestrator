@@ -53,6 +53,8 @@ cluster is unreachable, throttling this client, or whether the delay was this ho
 |---|---|---|
 | `Retry-After` on `503` | `5` s | A queueing or throttling server publishes no estimate; this is the orchestrator's own guess and is documented as one |
 | `helm list` page size | `256` | Helm's server-side default maximum; releases are read in pages of this size |
+| Required helm major version | `4` | The deploy path depends on Helm 4's `--set-json` and server-side apply ([ADR-0023](../design/adr/0023-the-tools-are-checked-not-assumed.md)) |
+| Tool version cache | `60` s | `helm version` is asked at most once a minute |
 
 ## Optional: model-backed translator
 

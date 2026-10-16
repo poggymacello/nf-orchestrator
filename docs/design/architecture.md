@@ -82,7 +82,7 @@ flowchart TD
 
 | Outcome | Means | Introduced by |
 |---|---|---|
-| `HostMisconfigured` | helm or kubectl missing or not executable | [ADR-0022](adr/0022-a-failed-spawn-is-classified-by-its-cause.md), drill 15 |
+| `HostMisconfigured` | helm or kubectl missing or not executable, or helm not version 4; checked before every write, so a wrong helm is refused rather than attempted | [ADR-0022](adr/0022-a-failed-spawn-is-classified-by-its-cause.md), [ADR-0023](adr/0023-the-tools-are-checked-not-assumed.md), drills 15 and 16 |
 | `HostExhausted` | No process or thread could be created (pids or memory limit) | [ADR-0021](adr/0021-a-host-out-of-capacity-is-not-a-slow-host.md), drill 14 |
 | `HostOverloaded` | This host was too slow; the cluster's own round trip was fast | [ADR-0018](adr/0018-the-probe-measures-two-ends.md), [ADR-0020](adr/0020-an-inconclusive-probe-is-asked-again.md), drills 11 and 13 |
 | `ClusterBusy` | The cluster is up and not serving this client: throttled or queueing | [ADR-0016](adr/0016-busy-is-not-unreachable.md), [ADR-0017](adr/0017-reachability-needs-more-than-one-witness.md), drills 9 and 10 |

@@ -15,7 +15,7 @@ own code and writing. Scope and non-goals: [overview](design/00-overview.md).
 | Respond to an alert | [Runbooks](operations/README.md#runbooks); every alert's `runbook_url` points at one |
 | Understand how it works | [Architecture](design/architecture.md) and the [lifecycle state model](design/lifecycle-states.md) |
 | Understand why it is built this way | [Architecture decision records](design/adr/) |
-| See how it fails, and what was learned | [Postmortems](operations/README.md#drills-run-so-far) for all fifteen failure drills |
+| See how it fails, and what was learned | [Postmortems](operations/README.md#drills-run-so-far) for all sixteen failure drills |
 | Contribute | [CONTRIBUTING](../CONTRIBUTING.md) |
 | Report a vulnerability | [SECURITY](../SECURITY.md) |
 
