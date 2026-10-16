@@ -1,4 +1,4 @@
-.PHONY: install lint test e2e scan trivy up down demo
+.PHONY: install lint test rules e2e scan trivy up down demo
 
 install:
 	pip install -e ".[dev]"
@@ -8,6 +8,12 @@ lint:
 
 test:
 	pytest
+
+# The alert rules: syntax, then the promtool unit tests that replay the drills' series.
+# Needs docker. CI runs the same two commands, on the image pinned by digest.
+rules:
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/monitoring:/monitoring" --entrypoint promtool prom/prometheus:v3.13.1 check rules /monitoring/nf-lifecycle.rules.yml
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/monitoring:/monitoring" --entrypoint promtool prom/prometheus:v3.13.1 test rules /monitoring/tests/nf-lifecycle.rules.test.yml
 
 # Needs the kind cluster from `make up`. CI runs the same command.
 e2e:

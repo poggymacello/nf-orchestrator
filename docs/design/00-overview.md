@@ -12,7 +12,7 @@ comes out.
 - Deploy the resulting workload with Helm onto a local `kind` cluster.
 - Report deployment state through a small, well-defined lifecycle enum
   (`NOT_INSTANTIATED` / `INSTANTIATING` / `INSTANTIATED` / `FAILED`), not raw pod phases.
-- Expose metrics (deployments total, failures, time-to-instantiate) and survive deliberate failure
+- Expose metrics and alert rules that stay truthful under failure, proven by deliberate failure
   drills with documented runbooks and postmortems.
 
 ## Non-goals
@@ -32,25 +32,27 @@ comes out.
 
 ## Where this stands today
 
-The whole intent → deploy → lifecycle → metrics path is wired and running (M0 through M4). An intent
-is validated, deployed with Helm to `kind`, and its lifecycle state derived from live cluster
-signals on every read, with Prometheus gauges and alerting rules over the top.
+The intent → deploy → lifecycle → metrics path is complete and running. An intent is validated,
+deployed with Helm, and its lifecycle state derived from live cluster signals on every read. Ten
+alert rules, each with a runbook, sit on top of the metrics.
 
-Four deliberate failure drills have been run, with postmortems, runbooks, and fixes verified by
-re-running the drill — see [`../operations/`](../operations/README.md). Every one found the
-orchestrator reporting something false: the first three against a real cluster, recorded as ADR-0006
-through ADR-0009, and the fourth against the translation boundary.
+Fifteen deliberate failure drills have been run, each with a postmortem, fixes verified by re-running
+it, and runbooks corrected by what it showed ([operations](../operations/README.md)). The later drills
+turned the orchestrator's main question from *what state is the network function in?* to *whose
+failure is this?*: the cluster refusing, throttling or gone, or the orchestrator's own host slow,
+out of processes, or missing a tool. Each answer has its own HTTP status, metric and alert
+([architecture](architecture.md#failure-classification)).
 
-M5 is done: five CI jobs run on every branch push — lint and unit tests, Gitleaks over the full
-history, the private-term grep, Trivy over the chart and the dependencies, and the end-to-end
-lifecycle against a real kind cluster on two pinned Kubernetes versions. The stand-in NF chart is
-hardened to zero HIGH findings.
+Five CI jobs run on every branch push: lint, unit tests and promtool tests of the alert rules;
+Gitleaks over the full history; the private-term scan; Trivy over the chart and the dependencies;
+and the end-to-end lifecycle against a real kind cluster on two pinned Kubernetes versions. The
+reference documentation and every relative link are checked against the code in the same run.
 
-M6 has its boundary: `POST /intents/translate` turns free text into a *candidate* intent that goes
-through the same schema as any other, and translating never deploys. A fourth failure drill was run
-against it. The model-backed translator exists behind the same protocol but has **never been run
-against a live API** — there was no key in the build environment, so its logic is unit tested
-against a fake client and its integration is not tested at all
+The LLM intent layer has its boundary: `POST /intents/translate` turns free text into a *candidate*
+intent that goes through the same schema, and translating never deploys. The route uses a rule-based
+translator. A model-backed translator exists behind the same protocol but has **never been run
+against a live API**: there was no key in the build environment, so its logic is unit tested against
+a fake client and its integration is not tested at all
 ([ADR-0013](adr/0013-the-claude-translator-is-opt-in-and-unverified.md)).
 
-See [`milestone-map.md`](../milestone-map.md) for what maps to which code milestone.
+See the [milestone map](../milestone-map.md) for what maps to which code milestone.
