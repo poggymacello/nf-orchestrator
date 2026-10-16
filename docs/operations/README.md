@@ -50,9 +50,13 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | 12 | A starved host and a frozen cluster | 2026-09-26 | 4 findings — the outage page fired, retiring drill 11's finding 8; but `OrchestratorHostOverloaded` **cleared mid-outage** because the host's share needed a round trip, and `ClusterThrottlingOrchestrator` went pending during a real outage and missed firing by ~2s, because `avg_over_time` averaged only the samples left; no alert rule had ever been run by a test. 1-3 fixed, 4 retired | [drill-12](postmortems/2026-09-26-drill-12-a-starved-host-and-a-frozen-cluster.md) |
 | 13 | The same outage, with nothing scraping | 2026-09-27 | 4 findings — with no scrape probe warm in the cache, the status route **blamed the orchestrator's own host through a real outage**, and `/readyz` reported a **healthy** cluster unreachable on the same starved host; a Windows clock-tick bug made a forced re-probe return the cached answer. 1-3 fixed, 4 (slower 503s on a starved host) accepted | [drill-13](postmortems/2026-09-27-drill-13-with-nothing-scraping.md) |
 | 14 | A host that cannot start threads | 2026-10-06 | 6 findings — in a container with a pids limit and a healthy cluster, Go's runtime crashed for want of threads and the orchestrator read it as the cluster's reply: `ClusterUnreachable` **paged**, the API answered 502 "the cluster refused" with 19 KB of Go stack, concurrent requests got bare 500s, 8 of 10 NFs lost monitoring to an unexplained `reason="error"`, and the host alert saw nothing. 1-5 fixed, 6 (pids sizing) accepted | [drill-14](postmortems/2026-10-06-drill-14-a-host-that-cannot-start-threads.md) |
+| 15 | The orchestrator cannot spawn its tools | 2026-10-16 | 5 findings — with helm missing, and separately with no spare pid so `fork` failed, the scrape **paged that a healthy cluster was unreachable**, the API answered bare `500`s, and with helm gone `/readyz` answered **`200 ready`**. 1-4 fixed, 5 (unrecognised spawn errors are re-raised, not guessed at) accepted | [drill-15](postmortems/2026-10-16-drill-15-the-orchestrator-cannot-spawn-its-tools.md) |
 | — | Node disk full | — | Abandoned on 2026-08-20 and superseded by drill 5, which turned eviction back on and calibrated the threshold to the host's free space instead of filling 760 GiB to reach a conventional one | — |
 
 ## Runbooks
+
+Every alert carries a `runbook_url` pointing at one of these; the mapping is in the
+[alerts reference](../reference/alerts.md).
 
 | Runbook | Use when |
 |---|---|
@@ -60,7 +64,8 @@ later recommended for. Ask what the step is being claimed to fix, not just wheth
 | [Control plane unreachable](runbooks/control-plane-unreachable.md) | Requests that need the cluster return `503`, or `/readyz` is failing |
 | [Node under disk pressure](runbooks/node-under-disk-pressure.md) | A deployment reads `FAILED` with pods showing `reason: Evicted`, or the node reports `DiskPressure=True` |
 | [Cluster throttling the orchestrator](runbooks/cluster-throttling.md) | `ClusterThrottlingOrchestrator` is firing, or a `503` carries `Retry-After` and says the API server is reachable |
-| [Scrape over budget](runbooks/scrape-over-budget.md) | `NFReleaseUnreported` is firing, or `nf_releases_unreported` is above zero |
+| [Scrape over budget](runbooks/scrape-over-budget.md) | `NFReleaseUnreported`, `OrchestratorScrapeFailing` or `OrchestratorHostOverloaded` is firing, or `nf_releases_unreported` is above zero |
+| [Orchestrator misconfigured](runbooks/orchestrator-misconfigured.md) | `OrchestratorMisconfigured` is firing, or a `500` says helm or kubectl is not installed |
 
 ## Severity
 
@@ -71,7 +76,7 @@ Two levels are enough for a project this size.
 | **Sev-1** | The orchestrator reports state that is wrong, not just unavailable | Stop, capture the raw signals, write a postmortem. A monitoring system that lies is worse than one that is down |
 | **Sev-2** | The orchestrator is unavailable or refuses work, and says so | Follow the runbook, note the duration |
 
-All fourteen drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
+All fifteen drills turned up Sev-1 behaviour, which is the point of running them. Every **defect**
 they found is now fixed, across ADRs [0006](../design/adr/0006-instantiated-means-the-intent-is-satisfied.md),
 [0007](../design/adr/0007-stability-is-an-alerting-concern.md),
 [0008](../design/adr/0008-forcing-field-ownership-is-an-explicit-operation.md) and
@@ -85,7 +90,8 @@ two-witness reachability of [ADR-0017](../design/adr/0017-reachability-needs-mor
 probe's two-ended measurement of [ADR-0018](../design/adr/0018-the-probe-measures-two-ends.md) for drill 11, and in the
 promtool-tested rules of [ADR-0019](../design/adr/0019-alert-rules-are-tested-against-drill-series.md) for drill 12, and in the
 settled probe of [ADR-0020](../design/adr/0020-an-inconclusive-probe-is-asked-again.md) for drill 13, and in the
-exhaustion classification of [ADR-0021](../design/adr/0021-a-host-out-of-capacity-is-not-a-slow-host.md) for drill 14. Each drill's action-item
+exhaustion classification of [ADR-0021](../design/adr/0021-a-host-out-of-capacity-is-not-a-slow-host.md) for drill 14, and in the
+spawn classification of [ADR-0022](../design/adr/0022-a-failed-spawn-is-classified-by-its-cause.md) for drill 15. Each drill's action-item
 table says which change closed which finding.
 
 Five items stay open and none is a defect. Drill 9's finding 3: a scrape concurrency ceiling above

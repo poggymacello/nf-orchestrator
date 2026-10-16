@@ -1,34 +1,42 @@
 # Documentation
 
-Engineering documentation for nf-orchestrator: the design decisions, build log, learning notes,
-and operations material behind the code in this repository.
+Everything behind the code in this repository, organised by what you are trying to do.
 
-This is a **self-directed learning project**. Everything here is built from public upstream
-sources and my own code and writing.
+This is a **self-directed learning project**, built from public upstream sources and its author's
+own code and writing. Scope and non-goals: [overview](design/00-overview.md).
 
-## What this covers
+## Find what you need
 
-| Section | What you'll find |
+| If you want to… | Read |
 |---|---|
-| [Design](design/) | Problem statement, architecture diagram, NF lifecycle state model, and Architecture Decision Records (ADRs) |
-| [Build log](build-log/) | An honest per-milestone journal: what I set out to do, what broke, and what I learned |
-| [Daily log](daily-log/) | A dated day-by-day record of building this project |
-| [Learning notes](learning-notes/) | Deep-dive notes on the tools I taught myself (FastAPI, JSON Schema, Helm/kind, Prometheus, GitHub Actions) |
-| [Operations](operations/) | Runbooks, incident-management process, and blameless postmortems from deliberate failure drills |
+| Run it | The [quickstart](../README.md#quickstart), then the [configuration reference](reference/configuration.md) |
+| Call the API, or handle its errors | [API reference](reference/api.md) |
+| Scrape it, or route its alerts | [Metrics](reference/metrics.md) and [alerts](reference/alerts.md) |
+| Respond to an alert | [Runbooks](operations/README.md#runbooks); every alert's `runbook_url` points at one |
+| Understand how it works | [Architecture](design/architecture.md) and the [lifecycle state model](design/lifecycle-states.md) |
+| Understand why it is built this way | [Architecture decision records](design/adr/) |
+| See how it fails, and what was learned | [Postmortems](operations/README.md#drills-run-so-far) for all fifteen failure drills |
+| Contribute | [CONTRIBUTING](../CONTRIBUTING.md) |
+| Report a vulnerability | [SECURITY](../SECURITY.md) |
 
-## The system in one line
+## Sections
 
-`intent JSON → schema validation → Helm deploy to kind → O-RAN-style lifecycle states → Prometheus/Grafana`,
-with deliberate failure drills, blameless postmortems, and security gates (Gitleaks, Trivy) in CI.
+| Section | Contents |
+|---|---|
+| [Reference](reference/) | Configuration, API and error model, metrics, alerts. Checked against the code in CI |
+| [Design](design/) | Overview and non-goals, architecture, lifecycle states, ADRs |
+| [Operations](operations/README.md) | Severity model, incident process, runbooks, postmortems, drill manifests |
+| [Build log](build-log/) | Per milestone: what was set out to do, what broke, what was learned |
+| [Daily log](daily-log/) | A dated record of every working day. History: not updated to match later code |
+| [Learning notes](learning-notes/) | FastAPI, JSON Schema validation, Helm and kind, Prometheus instrumentation |
+| [Milestone map](milestone-map.md) | Each code milestone, the documents it produced, and its status |
 
-## Status
+## Conventions
 
-M0 through M5 are done and M6 has its boundary; M7 is the publish pass this section is part of.
-Documents are written after the code milestone they describe is real, and anything not yet built is
-marked `(planned)` rather than described as if it exists. See
-[`milestone-map.md`](milestone-map.md) for the mapping between code milestones and the documents
-they produce, including the two things that are deliberately still missing.
+- A document describes what is true of the code at the commit it is in. What is not built is said to
+  be not built.
+- Runbook commands were run during a drill, with real output, or are marked **(not drilled)**.
+- Postmortems are blameless, written from captured output, and state their hypotheses before the
+  drill.
 
-## License
-
-[MIT](../LICENSE).
+The full standards are in [CONTRIBUTING](../CONTRIBUTING.md#documentation-standards).

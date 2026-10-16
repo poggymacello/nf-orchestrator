@@ -952,3 +952,130 @@ def test_any_other_runtime_error_is_still_an_error(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(deploy_engine, "check_cluster", broken)
     with pytest.raises(RuntimeError, match="something else entirely"):
         client.get("/readyz")
+
+
+# --- drill 15: this host cannot spawn its tools at all ---
+
+
+def helm_missing() -> FileNotFoundError:
+    """What Python raised in drill 15's container with helm moved off PATH."""
+    return FileNotFoundError(2, "No such file or directory", "helm")
+
+
+def no_spare_pid() -> BlockingIOError:
+    """What Python raised in drill 15's container at a pids limit with nothing spare."""
+    return BlockingIOError(11, "Resource temporarily unavailable")
+
+
+def test_a_missing_tool_is_this_hosts_misconfiguration() -> None:
+    failure = deploy_engine.spawn_failure("helm", helm_missing())
+    assert isinstance(failure, deploy_engine.HostMisconfigured)
+    assert "helm is not installed" in str(failure)
+
+
+def test_a_tool_that_cannot_be_executed_is_misconfiguration_too() -> None:
+    failure = deploy_engine.spawn_failure("helm", PermissionError(13, "Permission denied"))
+    assert isinstance(failure, deploy_engine.HostMisconfigured)
+
+
+def test_a_fork_with_no_room_is_exhaustion() -> None:
+    failure = deploy_engine.spawn_failure("helm", no_spare_pid())
+    assert isinstance(failure, deploy_engine.HostExhausted)
+    assert "errno 11" in str(failure)
+
+
+def test_an_unrecognised_spawn_error_is_not_guessed_at(monkeypatch: pytest.MonkeyPatch) -> None:
+    import errno
+    import subprocess
+
+    def too_big(*args: object, **kwargs: object) -> object:
+        raise OSError(errno.E2BIG, "Argument list too long")
+
+    monkeypatch.setattr(subprocess, "run", too_big)
+    assert deploy_engine.spawn_failure("helm", OSError(errno.E2BIG, "x")) is None
+    with pytest.raises(OSError, match="Argument list too long"):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_helm_missing_raises_misconfigured_not_an_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    def missing(*args: object, **kwargs: object) -> object:
+        raise helm_missing()
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    with pytest.raises(deploy_engine.HostMisconfigured):
+        deploy_engine.run_helm(["history", "sample-nf"])
+
+
+def test_no_spare_pid_raises_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def full(*args: object, **kwargs: object) -> object:
+        raise no_spare_pid()
+
+    monkeypatch.setattr(subprocess, "run", full)
+    with pytest.raises(deploy_engine.HostExhausted):
+        deploy_engine.run_kubectl(["get", "pods"])
+
+
+def test_a_missing_tool_is_500_without_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drill 15, before: a bare "Internal Server Error" with nothing to say why."""
+
+    def missing(args: list[str]) -> str:
+        raise deploy_engine.spawn_failure("helm", helm_missing())  # type: ignore[misc]
+
+    monkeypatch.setattr(deploy_engine, "run_helm", missing)
+    response = client.post("/deployments", json=VALID)
+    assert response.status_code == 500
+    assert "retry-after" not in response.headers
+    assert "helm is not installed" in response.json()["detail"]
+
+
+def test_readiness_needs_both_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drill 15, before: /readyz answered 200 with helm gone, because kubectl was there."""
+    monkeypatch.setattr(deploy_engine, "missing_tools", lambda: ["helm"])
+    with pytest.raises(deploy_engine.HostMisconfigured, match="helm not found on PATH"):
+        deploy_engine.check_cluster()
+    response = client.get("/readyz")
+    assert response.status_code == 500
+    assert "retry-after" not in response.headers
+
+
+@pytest.mark.real_tool_lookup
+def test_missing_tools_looks_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda tool: None if tool == "helm" else f"/bin/{tool}")
+    assert deploy_engine.missing_tools() == ["helm"]
+
+
+def test_a_probe_that_cannot_spawn_kubectl_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def missing(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError(2, "No such file or directory", "kubectl")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    probe = deploy_engine.api_server_probe(max_age=0.0)
+    assert isinstance(probe.spawn_failure, deploy_engine.HostMisconfigured)
+    with pytest.raises(deploy_engine.HostMisconfigured):
+        deploy_engine.check_cluster()
+
+
+def test_a_probe_with_no_spare_pid_is_exhausted_not_too_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drill 15, before: "did not start within 3s" about a fork that failed instantly."""
+    import subprocess
+
+    def full(*args: object, **kwargs: object) -> object:
+        raise no_spare_pid()
+
+    monkeypatch.setattr(subprocess, "run", full)
+    probe = deploy_engine.api_server_probe(max_age=0.0)
+    assert probe.exhausted
+    with pytest.raises(deploy_engine.HostExhausted):
+        deploy_engine.check_cluster()

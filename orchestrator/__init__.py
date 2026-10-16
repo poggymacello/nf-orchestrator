@@ -46,7 +46,13 @@ async def host_out_of_threads(request: Request, exc: RuntimeError) -> JSONRespon
 
 
 def http_error(exc: deploy_engine.DeployError) -> HTTPException:
-    """503 unreachable or busy, 409 a field-ownership conflict, 502 any other refusal."""
+    """503 unreachable or busy, 409 a field-ownership conflict, 502 any other refusal.
+
+    500 when this host cannot run its tools at all: an operator has to act, and a caller
+    retrying will not change anything, so no Retry-After (drill 15).
+    """
+    if isinstance(exc, deploy_engine.HostMisconfigured):
+        return HTTPException(status_code=500, detail=str(exc))
     if isinstance(exc, deploy_engine.HostOverloaded):
         # The orchestrator cannot answer right now and expects to again, which is 503 with
         # Retry-After whoever is to blame — the detail is what says it is this host.

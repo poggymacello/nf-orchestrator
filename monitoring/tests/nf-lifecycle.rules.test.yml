@@ -112,3 +112,25 @@ tests:
       - expr: 'avg_over_time(nf_orchestrator_probe_local_seconds[2m]) >= 0.5 or (sum_over_time(nf_orchestrator_exhausted[2m]) / count_over_time(up{job="nf-orchestrator"}[2m])) >= 0.25'
         eval_time: 3m
         exp_samples: []
+
+  # Drill 15: helm missing, every scrape says so. Fires.
+  - interval: 5s
+    input_series:
+      - series: 'nf_orchestrator_misconfigured{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '1x40'
+    promql_expr_test:
+      - expr: 'nf_orchestrator_misconfigured == 1'
+        eval_time: 3m
+        exp_samples:
+          - labels: '{__name__="nf_orchestrator_misconfigured",instance="orchestrator:8000",job="nf-orchestrator"}'
+            value: 1
+
+  # Tools present. Does not fire.
+  - interval: 5s
+    input_series:
+      - series: 'nf_orchestrator_misconfigured{instance="orchestrator:8000",job="nf-orchestrator"}'
+        values: '0x40'
+    promql_expr_test:
+      - expr: 'nf_orchestrator_misconfigured == 1'
+        eval_time: 3m
+        exp_samples: []
