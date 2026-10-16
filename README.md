@@ -7,7 +7,7 @@
 
 An intent-driven orchestrator for network functions on Kubernetes. It validates a declarative intent,
 deploys it with Helm, reports lifecycle state derived from live cluster signals, and exposes
-Prometheus metrics and alert rules that have been hardened through fifteen staged failure drills.
+Prometheus metrics and alert rules that have been hardened through sixteen staged failure drills.
 
 > **Scope.** This is a **self-directed learning project**: a generic re-implementation, built only
 > from public sources, of the pattern behind SMO-driven network function orchestration in O-RAN. It
@@ -136,7 +136,7 @@ All eleven settings, with defaults and the reasoning behind them:
 | `DELETE /deployments/{name}` | Uninstall. Idempotent |
 | `POST /intents/validate` · `GET /intents/schema` | Validate an intent without deploying · its JSON Schema |
 | `POST /intents/translate` | Free text to a *candidate* intent that passes the same schema. Translating never deploys |
-| `GET /healthz` · `GET /readyz` | Liveness · readiness (tools installed, API server answering) |
+| `GET /healthz` · `GET /readyz` | Liveness · readiness (Helm 4 and kubectl installed, API server answering) |
 | `GET /metrics` | Prometheus exposition |
 
 The status code says who failed and whether to retry: `500` this host is misconfigured, `502` the
@@ -157,7 +157,7 @@ Ten alert rules, with severities `page` and `warning`, each linking its runbook:
 
 ## Reliability: failure drills
 
-Fifteen deliberate failure drills were run against real clusters. For each one the expected
+Sixteen deliberate failure drills were run against real clusters. For each one the expected
 behaviour was written down first, a blameless postmortem was written from the captured output, the
 fix was verified by re-running the drill, and the runbooks were corrected where the drill proved them
 wrong. Every one found the orchestrator, or the monitoring around it, reporting something false.
@@ -179,13 +179,14 @@ wrong. Every one found the orchestrator, or the monitoring around it, reporting 
 | [13 — the same outage, with nothing scraping](docs/operations/postmortems/2026-09-27-drill-13-with-nothing-scraping.md) | The status route **blamed the orchestrator for a real outage**, and `/readyz` called a **healthy** cluster unreachable |
 | [14 — a host that cannot start threads](docs/operations/postmortems/2026-10-06-drill-14-a-host-that-cannot-start-threads.md) | Under a pids limit, Go's thread failure was read as the cluster's reply: **an outage page**, `502` with 19 KB of stack, bare `500`s |
 | [15 — the orchestrator cannot spawn its tools](docs/operations/postmortems/2026-10-16-drill-15-the-orchestrator-cannot-spawn-its-tools.md) | A missing helm and a full process table both **paged as a cluster outage**, and `/readyz` said **ready** with helm gone |
+| [16 — the wrong helm](docs/operations/postmortems/2026-10-16-drill-16-the-wrong-helm.md) | With Helm 3 installed, every deploy failed and was **blamed on the cluster** (`502`) while `/readyz` said ready, and given arguments it accepts, Helm 3 **silently overwrote** another manager's change |
 
-65 findings. Every defect is fixed and re-verified; twelve are limits, accepted and written down. One
+69 findings. Every defect is fixed and re-verified; thirteen are limits, accepted and written down. One
 more was accepted and then drilled, and turned out to be false.
 
 Three lessons recur. Drills 1–3: two values that are usually equal were collapsed into one, and they
 diverged only during an incident. Drills 6–8: a fix made for one cluster became the defect on
-another. Drills 9–15: one exception class covered several different failures, so the default answer
+another. Drills 9–16: one exception class covered several different failures, so the default answer
 blamed the cluster, the one component that was often fine. Process, severity model, runbooks and
 every postmortem: [operations](docs/operations/README.md).
 
@@ -210,10 +211,11 @@ Recorded as ADRs with the alternatives that were rejected and why, in
 | [0020](docs/design/adr/0020-an-inconclusive-probe-is-asked-again.md) | An inconclusive probe is asked again, not believed |
 | [0021](docs/design/adr/0021-a-host-out-of-capacity-is-not-a-slow-host.md) | A host out of threads is its own failure, not a refusing cluster |
 | [0022](docs/design/adr/0022-a-failed-spawn-is-classified-by-its-cause.md) | A failed spawn is classified by its cause |
+| [0023](docs/design/adr/0023-the-tools-are-checked-not-assumed.md) | The tools' versions are checked, not assumed: the wrong helm is refused before it can write |
 
 ## Development
 
-249 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
+258 unit tests, plus 6 end-to-end tests that drive the real API against a real cluster. CI runs
 five jobs on every branch push:
 
 | Job | |
@@ -256,7 +258,7 @@ Not built:
 | | |
 |---|---|
 | [Reference](docs/reference/) | Configuration, API and error model, metrics, alerts. Checked against the code in CI |
-| [Design](docs/design/) | Overview, architecture, lifecycle state model, and 21 ADRs |
+| [Design](docs/design/) | Overview, architecture, lifecycle state model, and 22 ADRs |
 | [Operations](docs/operations/README.md) | Severity model, runbooks, postmortems for every drill |
 | [Build log](docs/build-log/) · [Daily log](docs/daily-log/) | What was built when, what broke, what was learned |
 | [Learning notes](docs/learning-notes/) | FastAPI, JSON Schema, Helm and kind, Prometheus |
