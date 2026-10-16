@@ -45,7 +45,7 @@ explicitly instead of letting it disappear ([ADR-0014](../design/adr/0014-the-sc
 |---|---|---|
 | `nf_orchestrator_probe_local_seconds` | gauge | How much of this scrape's probe was spent on the orchestrator's host, mostly starting kubectl. About 0.05–0.1 s on an idle host; over 1 s on a CPU-starved one ([drill 11](../operations/postmortems/2026-09-24-drill-11-the-orchestrator-host-is-starved.md)) |
 | `nf_orchestrator_exhausted` | gauge | 1 when this scrape could not start a process or thread it needed: a pids or memory limit ([ADR-0021](../design/adr/0021-a-host-out-of-capacity-is-not-a-slow-host.md)) |
-| `nf_orchestrator_misconfigured` | gauge | 1 when helm or kubectl was missing or not executable ([ADR-0022](../design/adr/0022-a-failed-spawn-is-classified-by-its-cause.md)) |
+| `nf_orchestrator_misconfigured` | gauge | 1 when helm or kubectl was missing or not executable, or helm was not version 4 ([ADR-0022](../design/adr/0022-a-failed-spawn-is-classified-by-its-cause.md), [ADR-0023](../design/adr/0023-the-tools-are-checked-not-assumed.md)) |
 
 ## Counters
 

@@ -2,7 +2,7 @@
 
 **Use when:** `OrchestratorMisconfigured` is firing, `nf_orchestrator_misconfigured` is 1, or a route
 returns `500` with a detail saying *helm* or *kubectl* *is not installed or not executable on this
-host*, or *not found on PATH*.
+host*, *not found on PATH*, or *is installed but Helm 4 is required*.
 
 **Severity:** Sev-1. Every deploy, status and teardown call fails until it is fixed, and nothing
 recovers on its own. The cluster is not the problem: do not change anything there.
@@ -10,8 +10,9 @@ recovers on its own. The cluster is not the problem: do not change anything ther
 Every command here was run during
 [drill 15](../postmortems/2026-10-16-drill-15-the-orchestrator-cannot-spawn-its-tools.md) on
 2026-10-16, with the orchestrator in its drill container
-([`manifests/drill.Dockerfile`](../manifests/drill.Dockerfile)) and helm moved off its `PATH`. Steps
-not exercised there are marked **(not drilled)**.
+([`manifests/drill.Dockerfile`](../manifests/drill.Dockerfile)) and helm moved off its `PATH`, and
+during [drill 16](../postmortems/2026-10-16-drill-16-the-wrong-helm.md) with Helm 3 installed instead
+of Helm 4. Steps not exercised there are marked **(not drilled)**.
 
 ## How this incident presents
 
@@ -81,10 +82,26 @@ nf_releases_unreported{reason="host"} 0.0
 Seen within one scrape of the binary returning. `OrchestratorMisconfigured` resolves once the gauge
 has read 0 for the rule's evaluation.
 
+## When it is the wrong helm, not a missing one
+
+```
+{"detail":"helm v3.19.0+g3d8990f is installed but Helm 4 is required (server-side apply that refuses
+conflicting field owners, and --set-json taking a whole object): install Helm 4; retrying will not help"} http=500
+```
+
+The orchestrator needs Helm **4**. Helm 3 cannot parse the values the orchestrator passes, and with
+values it can parse it would silently overwrite fields another manager owns, the opposite of the
+`409` this API promises. Drill 16 measured both. Reads keep working under Helm 3, which is why the
+orchestrator now checks the version instead of waiting for a deploy to fail.
+
+Install Helm 4 (CI and the drill image pin 4.2.2) in place of the old binary. The orchestrator
+re-reads the version at most a minute later; `/readyz` turning `200` and
+`nf_orchestrator_misconfigured 0` confirm it. **(replacing the binary under a running orchestrator
+not drilled; drill 16 used a separate image per version)**
+
 ## What this runbook does not cover
 
-- **A tool that is present but the wrong version.** Helm 3 would install and list, but not refuse
-  field-ownership conflicts the way the tests assert. Nothing detects this at runtime.
+- **A Helm 4 minor or patch version that behaves differently.** Only the major version is checked.
   **(not drilled)**
 - **A tool that is present but cannot reach anything** (no kubeconfig, wrong context). That reads as
   the cluster's answer, and belongs to [control plane unreachable](control-plane-unreachable.md).
